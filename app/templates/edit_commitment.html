@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+
+{% block content %}
+    <h1>Edit Commitment</h1>
+    <form action="{{ url_for('edit_commitment', commitment_id=commitment.id) }}" method="post" novalidate>
+        {{ form.hidden_tag() }}
+        <p>
+            {{ form.category.label }}<br>
+            {{ form.category() }}<br>
+            {% for error in form.category.errors %}
+            <span style="color: red;">[{{ error }}]</span>
+            {% endfor %}
+        </p>
+        <p>
+            {{ form.title.label }}<br>
+            {{ form.title(size=64) }}<br>
+            {% for error in form.title.errors %}
+            <span style="color: red;">[{{ error }}]</span>
+            {% endfor %}
+        </p>
+        <p>
+            {{ form.description.label }}<br>
+            {{ form.description(rows=4, cols=64) }}<br>
+            {% for error in form.description.errors %}
+            <span style="color: red;">[{{ error }}]</span>
+            {% endfor %}
+        </p>
+        <p>
+            {{ form.deadline_date.label }}<br>
+            {{ form.deadline_date(class_="future-date-only") }}<br>
+            {% for error in form.deadline_date.errors %}
+            <span style="color: red;">[{{ error }}]</span>
+            {% endfor %}
+        </p>
+        <p><button type="submit">Save Changes</button></p>
+    </form>
+{% endblock %}

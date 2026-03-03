@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="login-note-wrap">
+    <p class="login-note">Sign in to save commitments.</p>
+</div>
+
+<div class="auth-shell auth-shell-flat">
+    <section class="auth-plain">
+        <h2 class="login-subtitle">Sign in to My Commitments</h2>
+        <form action="" method="post" novalidate class="auth-form" autocomplete="on">
+            {{ form.hidden_tag() }}
+
+            <div class="auth-field auth-floating-field">
+                <div class="floating-control">
+                    {{ form.username(
+                        class="auth-input auth-input-floating" ~ (" is-invalid" if form.username.errors else ""),
+                        size=32,
+                        placeholder=" ",
+                        autocomplete="email"
+                    ) }}
+                    <label for="{{ form.username.id }}" class="floating-label">{{ form.username.label.text }}</label>
+                </div>
+                {% for error in form.username.errors %}
+                    <p class="auth-error">{{ error }}</p>
+                {% endfor %}
+            </div>
+
+            <div class="auth-field auth-floating-field">
+                <div class="floating-control">
+                    {{ form.password(
+                        class="auth-input auth-input-floating" ~ (" is-invalid" if form.password.errors else ""),
+                        size=32,
+                        placeholder=" ",
+                        autocomplete="current-password"
+                    ) }}
+                    <label for="{{ form.password.id }}" class="floating-label">{{ form.password.label.text }}</label>
+                </div>
+                {% for error in form.password.errors %}
+                    <p class="auth-error">{{ error }}</p>
+                {% endfor %}
+            </div>
+
+            <div class="auth-check-wrap">
+                <label class="auth-check">
+                    {{ form.remember_me() }}
+                    <span>{{ form.remember_me.label.text }}</span>
+                </label>
+                <a class="apple-link-btn" href="{{ url_for('forgot_password') }}">Forgotten your password? ↗</a>
+            </div>
+
+            {{ form.submit(class="action-btn auth-submit") }}
+        </form>
+
+        <p class="auth-switch">New user? <a href="{{ url_for('register') }}">Create an account</a></p>
+    </section>
+</div>
+{% endblock %}

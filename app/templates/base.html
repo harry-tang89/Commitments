@@ -1,0 +1,143 @@
+<!doctype html>
+<html>
+    <head>
+      <!--
+      Page title:
+      - If a "title" variable is provided by the Flask view, use it.
+      - Otherwise fall back to "Commitments".
+      -->
+      <title>{{ title if title else "Commitments" }}</title>
+      
+      <!-- Responsive layout on mobile -->
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      
+      <!-- PWA-related metadata -->
+      <meta name="theme-color" content="#ffffff">
+      <meta name="apple-mobile-web-app-capable" content="yes">
+      <meta name="apple-mobile-web-app-status-bar-style" content="default">
+
+      <!-- Web App Manifest (Flask endpoint that returns manifest JSON) -->
+      <link rel="manifest" href="{{ url_for('web_manifest') }}">
+
+      <!-- iOS home-screen icon -->
+      <link rel="apple-touch-icon" href="{{ url_for('static', filename='icons/icon-192.png') }}">
+      
+      <!-- Bulma CSS (local copy for offline use) -->
+      <link rel="stylesheet" href="{{ url_for('static', filename='vendor/bulma.min.css') }}">
+      
+      <!-- Your local stylesheet -->
+      <link rel= "stylesheet" type= "text/css" href= "{{ url_for('static',filename='styles/main.css') }}">
+
+      <!--
+        NOTE: If you want JS to never delay rendering, you can also add:
+        <script src="..." defer></script>
+        But since you're using inline scripts at the bottom, you're already fine.
+      -->
+    </head>
+    <body>
+        <nav class="top-nav" role="navigation" aria-label="main navigation">
+            <div class="top-left-links">
+                <a class="nav-home-link" href="{{ url_for('index') }}">Commitments</a>
+            </div>
+
+            <div class="top-right-links">
+                <a class="top-link" href="{{ url_for('settings') }}">Settings</a>
+                {% if current_user.is_anonymous %}
+                <a class="top-link" href="{{ url_for('login') }}">Login</a>
+                {% else %}
+                <a class="top-link" href="{{ url_for('logout') }}">Logout</a>
+                {% endif %}
+            </div>
+        </nav>
+        <!--
+            Flash messages (Flask "flash()"):
+            get_flashed_messages() returns a list of messages stored for the next request.
+        -->
+        {% with messages = get_flashed_messages() %}
+        {% if messages %}
+            <ul class="flashes">
+            {% for message in messages %}
+                <li>{{ message }}</li>
+            {% endfor %}
+            </ul>
+        {% endif %}
+        {% endwith %}
+        <section class="section app-main">
+            {% block content %}{% endblock %}
+        </section>
+        <script>
+            /**
+            * registerServiceWorkerOnLoad
+            * ---------------------------
+            * Purpose:
+            * - Register a service worker (sw.js) to enable offline/PWA behavior.
+            *
+            * Why wait for "load"?
+            * - To avoid delaying first paint / initial rendering.
+            *
+            * Notes:
+            * - "serviceWorker in navigator" checks browser support.
+            * - If registration fails, we silently ignore it (common in dev or unsupported contexts).
+            */
+            (function () {
+                // Register service worker after page load to avoid blocking first paint.
+                if (!("serviceWorker" in navigator)) return;
+                window.addEventListener("load", function () {
+                    navigator.serviceWorker.register("/sw.js").catch(function () {});
+                });
+            })();
+
+            (function () {
+                // Normalize HTML date input behavior and set min date for future-only fields.
+                const today = new Date();
+                const yyyy = today.getFullYear();
+                const mm = String(today.getMonth() + 1).padStart(2, "0");
+                const dd = String(today.getDate()).padStart(2, "0");
+                const minDate = `${yyyy}-${mm}-${dd}`;
+                document.querySelectorAll("input[type='date']").forEach((input) => {
+                    input.setAttribute("lang", "en-US");
+                });
+                document.querySelectorAll("input.future-date-only[type='date']").forEach((input) => {
+                    input.setAttribute("min", minDate);
+                });
+            })();
+
+            (function () {
+                const settingsStorageKey = "setting_default_deadline_today_v1";
+                const quickDeadlineInput = document.getElementById("quick-deadline-date");
+                const quickForm = document.getElementById("quickCommitmentForm");
+
+                function todayIsoDate() {
+                    const now = new Date();
+                    const y = now.getFullYear();
+                    const m = String(now.getMonth() + 1).padStart(2, "0");
+                    const d = String(now.getDate()).padStart(2, "0");
+                    return `${y}-${m}-${d}`;
+                }
+
+                function defaultDeadlineEnabled() {
+                    return localStorage.getItem(settingsStorageKey) === "1";
+                }
+
+                function applyDeadlineDefault(force = false) {
+                    if (!quickDeadlineInput) return;
+                    if (!defaultDeadlineEnabled()) return;
+                    if (quickDeadlineInput.value && !force) return;
+                    quickDeadlineInput.value = todayIsoDate();
+                }
+
+                applyDeadlineDefault();
+
+                if (quickForm) {
+                    quickForm.addEventListener("reset", () => {
+                        window.setTimeout(() => applyDeadlineDefault(true), 0);
+                    });
+                }
+
+                window.applyDefaultDeadlineDate = function () {
+                    applyDeadlineDefault(true);
+                };
+            })();
+        </script>
+    </body>
+</html>

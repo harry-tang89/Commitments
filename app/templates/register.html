@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="auth-shell">
+    <section class="auth-card">
+        <h1>Create account</h1>
+        <form action="" method="post" novalidate class="auth-form">
+            {{ form.hidden_tag() }}
+
+            <div class="auth-field auth-floating-field">
+                <div class="floating-control">
+                    {{ form.email(
+                        class="auth-input auth-input-floating" ~ (" is-invalid" if form.email.errors else ""),
+                        size=64,
+                        placeholder=" ",
+                        autocomplete="email"
+                    ) }}
+                    <label for="{{ form.email.id }}" class="floating-label">{{ form.email.label.text }}</label>
+                </div>
+                {% for error in form.email.errors %}
+                    <p class="auth-error">{{ error }}</p>
+                {% endfor %}
+            </div>
+
+            <div class="auth-field auth-floating-field">
+                <div class="floating-control">
+                    {{ form.username(
+                        class="auth-input auth-input-floating" ~ (" is-invalid" if form.username.errors else ""),
+                        size=32,
+                        placeholder=" ",
+                        autocomplete="username"
+                    ) }}
+                    <label for="{{ form.username.id }}" class="floating-label">{{ form.username.label.text }}</label>
+                </div>
+                {% for error in form.username.errors %}
+                    <p class="auth-error">{{ error }}</p>
+                {% endfor %}
+            </div>
+
+            <div class="auth-field">
+                <label class="auth-inline-label">Date of birth</label>
+                <div class="birth-row">
+                    {{ form.birth_day(class="auth-input auth-select" ~ (" is-invalid" if form.birth_day.errors else "")) }}
+                    {{ form.birth_month(class="auth-input auth-select" ~ (" is-invalid" if form.birth_month.errors else "")) }}
+                    {{ form.birth_year(class="auth-input auth-select" ~ (" is-invalid" if form.birth_year.errors else "")) }}
+                </div>
+                {% for error in form.birth_day.errors %}
+                    <p class="auth-error">{{ error }}</p>
+                {% endfor %}
+                {% for error in form.birth_month.errors %}
+                    <p class="auth-error">{{ error }}</p>
+                {% endfor %}
+                {% for error in form.birth_year.errors %}
+                    <p class="auth-error">{{ error }}</p>
+                {% endfor %}
+            </div>
+
+            <div class="auth-field auth-floating-field">
+                <div class="floating-control">
+                    {{ form.password(
+                        class="auth-input auth-input-floating" ~ (" is-invalid" if form.password.errors else ""),
+                        size=32,
+                        placeholder=" ",
+                        autocomplete="new-password"
+                    ) }}
+                    <label for="{{ form.password.id }}" class="floating-label">{{ form.password.label.text }}</label>
+                </div>
+                {% for error in form.password.errors %}
+                    <p class="auth-error">{{ error }}</p>
+                {% endfor %}
+            </div>
+
+            <div class="auth-field auth-floating-field">
+                <div class="floating-control">
+                    {{ form.password2(
+                        class="auth-input auth-input-floating" ~ (" is-invalid" if form.password2.errors else ""),
+                        size=32,
+                        placeholder=" ",
+                        autocomplete="new-password"
+                    ) }}
+                    <label for="{{ form.password2.id }}" class="floating-label">{{ form.password2.label.text }}</label>
+                </div>
+                {% for error in form.password2.errors %}
+                    <p class="auth-error">{{ error }}</p>
+                {% endfor %}
+            </div>
+
+            {{ form.submit(class_="action-btn auth-submit") }}
+        </form>
+
+        <p class="auth-switch">Already registered? <a href="{{ url_for('login') }}">Sign in</a></p>
+    </section>
+</div>
+{% endblock %}

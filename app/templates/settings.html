@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="settings-shell">
+    <section class="settings-page-card">
+        <h1 class="settings-page-title">Settings</h1>
+        <div class="settings-row">
+            <div class="settings-copy">
+                <p class="settings-title">Default deadline date to today</p>
+                <p class="settings-help">When enabled, the create form pre-fills Deadline Date with today.</p>
+            </div>
+            <label class="apple-switch" for="setting-default-deadline-today">
+                <input type="checkbox" id="setting-default-deadline-today">
+                <span class="apple-switch-slider" aria-hidden="true"></span>
+            </label>
+        </div>
+        <p id="settingsStatus" class="quick-status" aria-live="polite"></p>
+        <a class="action-btn action-btn-secondary" href="{{ url_for('index') }}">Back to Home</a>
+    </section>
+</div>
+
+<script>
+(() => {
+    const settingsStorageKey = "setting_default_deadline_today_v1";
+    const toggleEl = document.getElementById("setting-default-deadline-today");
+    const statusEl = document.getElementById("settingsStatus");
+    if (!toggleEl || !statusEl) return;
+
+    toggleEl.checked = localStorage.getItem(settingsStorageKey) === "1";
+
+    function setStatus(text) {
+        statusEl.textContent = text;
+        window.setTimeout(() => {
+            if (statusEl.textContent === text) {
+                statusEl.textContent = "";
+            }
+        }, 1600);
+    }
+
+    toggleEl.addEventListener("change", () => {
+        localStorage.setItem(settingsStorageKey, toggleEl.checked ? "1" : "0");
+        setStatus("Setting saved.");
+    });
+})();
+</script>
+{% endblock %}

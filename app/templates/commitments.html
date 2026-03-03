@@ -1,0 +1,220 @@
+{% extends "base.html" %}
+
+{% block content %}
+    <p>
+        <a href="{{ url_for('commitments', open_create=1) }}" id="open-create-modal-btn">+ Add New Commitment</a>
+    </p>
+
+    {% if commitments %}
+    <h2 class="title" id="owned-by-me">Owned by Me</h2>
+    <div class="fixed-grid has-3-cols">
+        <div class="grid">
+            {% for commitment in commitments %}
+            {% set progress = commitment_progress.get(commitment.id, 0) %}
+            <div class="card cell">
+                <div class="card-header">
+                    <div class="card-header-title">
+                        {{ commitment.title }}
+                    </div>
+                </div>
+                <div class="card-content">
+                    <div class="commitment-description">
+                        <p>{{ commitment.description if commitment.description else '-' }}</p>
+                    </div>
+                    <div class="commitment-details">
+                        <div class="detail-item">
+                            <p><b>Deadline Date:</b> {{ commitment.deadline_date.strftime('%m/%d/%Y') }}</p>
+                            <p><b>Status:</b> {{ commitment.status|capitalize }}</p>
+                        </div>
+                        <div class="detail-item">
+                            <span class="progress-wrap">
+                                    <span class="progress-pie" style="--p: {{ progress }};" title="Time progress: {{ progress }}%"></span>
+                                    <span class="progress-text">{{ progress }}%</span>
+                            </span>
+                        </div>
+                    </div>
+                </div>
+                <footer class="card-footer">
+                    <form class="control footer-item" action="{{ url_for('edit_commitment', commitment_id=commitment.id) }}" method="get">
+                            <button type="submit" class="button is-ghost">Edit</button>
+                        </form>
+                        <form class="control footer-item" action="{{ url_for('toggle_commitment_status', commitment_id=commitment.id) }}" method="post">
+                            {{ action_form.hidden_tag() }}
+                            <button type="submit" class="button is-ghost">
+                                {% if commitment.status == 'active' %}
+                                    Mark Complete
+                                {% else %}
+                                    Mark Active
+                                {% endif %}
+                            </button>
+                        </form>
+                        <form class="control footer-item" action="{{ url_for('commitment_members', commitment_id=commitment.id) }}" method="get">
+                            <button type="submit" class="button is-ghost">View Members</button>
+                        </form>
+                        <form class="control footer-item" action="{{ url_for('delete_commitment', commitment_id=commitment.id) }}" method="post">
+                            {{ action_form.hidden_tag() }}
+                            <button type="submit" class="button is-ghost">Delete</button>
+                        </form>
+                </footer>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% else %}
+        <p>No commitments owned by you yet.</p>
+    {% endif %}
+
+    <h2 class="title" style="margin-top: 24px;">Joined by Invitation</h2>
+    {% if shared_commitments %}
+        <div class="fixed-grid has-3-cols">
+        <div class="grid">
+            {% for commitment in shared_commitments %}
+            {% set progress = commitment_progress.get(commitment.id, 0) %}
+            <div class="card cell">
+                <div class="card-header">
+                    <div class="card-header-title">
+                        {{ commitment.title }}
+                    </div>
+                </div>
+                <div class="card-content">
+                    <div class="commitment-description">
+                        <p>{{ commitment.description if commitment.description else '-' }}</p>
+                    </div>
+                    <div class="commitment-details">
+                        <div class="detail-item">
+                            <p><b>Deadline Date:</b> {{ commitment.deadline_date.strftime('%m/%d/%Y') }}</p>
+                            <p><b>Status:</b> {{ commitment.status|capitalize }}</p>
+                        </div>
+                        <div class="detail-item">
+                            <span class="progress-wrap">
+                                    <span class="progress-pie" style="--p: {{ progress }};" title="Time progress: {{ progress }}%"></span>
+                                    <span class="progress-text">{{ progress }}%</span>
+                            </span>
+                        </div>
+                    </div>
+                </div>
+                <footer class="card-footer">
+                    <form class="control footer-item" action="{{ url_for('edit_commitment', commitment_id=commitment.id) }}" method="get">
+                            <button type="submit" class="button is-ghost">Edit</button>
+                        </form>
+                        <form class="control footer-item" action="{{ url_for('toggle_commitment_status', commitment_id=commitment.id) }}" method="post">
+                            {{ action_form.hidden_tag() }}
+                            <button type="submit" class="button is-ghost">
+                                {% if commitment.status == 'active' %}
+                                    Mark Complete
+                                {% else %}
+                                    Mark Active
+                                {% endif %}
+                            </button>
+                        </form>
+                        <form class="control footer-item" action="{{ url_for('commitment_members', commitment_id=commitment.id) }}" method="get">
+                            <button type="submit" class="button is-ghost">View Members</button>
+                        </form>
+                        <form class="control footer-item" action="{{ url_for('delete_commitment', commitment_id=commitment.id) }}" method="post">
+                            {{ action_form.hidden_tag() }}
+                            <button type="submit" class="button is-ghost">Delete</button>
+                        </form>
+                </footer>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% else %}
+        <p>You have no shared commitments yet.</p>
+    {% endif %}
+
+    <div id="create-commitment-modal" class="edit-modal{% if not open_create_modal %} is-hidden{% endif %}">
+        <div class="edit-modal-backdrop" data-close-create-modal="true"></div>
+        <div class="edit-modal-panel">
+            <button
+                type="button"
+                class="modal-top-close-btn"
+                aria-label="Close"
+                data-close-create-modal="true"
+            >
+                &times;
+            </button>
+            <h2>Create your commitment now.</h2>
+            <form class="quick-form" action="{{ url_for('create_commitment') }}" method="post">
+                {{ commitment_form.hidden_tag() }}
+
+                <label for="{{ commitment_form.title.id }}">Title</label>
+                {{ commitment_form.title(
+                    placeholder="Example: Finish chapter 3 notes",
+                    class_="input" + (" input-invalid" if commitment_form.title.errors else "")
+                ) }}
+                {% for error in commitment_form.title.errors %}
+                    <p class="field-error">{{ error }}</p>
+                {% endfor %}
+
+                <label for="{{ commitment_form.deadline_date.id }}">Deadline Date</label>
+                {{ commitment_form.deadline_date(
+                    class_="input future-date-only" + (" input-invalid" if commitment_form.deadline_date.errors else "")
+                ) }}
+                {% for error in commitment_form.deadline_date.errors %}
+                    <p class="field-error">{{ error }}</p>
+                {% endfor %}
+
+                <label for="{{ commitment_form.description.id }}">Description (optional)</label>
+                {{ commitment_form.description(
+                    placeholder="Any extra details",
+                    rows="4",
+                    class_="input" + (" input-invalid" if commitment_form.description.errors else "")
+                ) }}
+                {% for error in commitment_form.description.errors %}
+                    <p class="field-error">{{ error }}</p>
+                {% endfor %}
+
+                <label for="{{ commitment_form.category.id }}">Category (optional)</label>
+                {{ commitment_form.category(
+                    class_="input" + (" input-invalid" if commitment_form.category.errors else "")
+                ) }}
+                {% for error in commitment_form.category.errors %}
+                    <p class="field-error">{{ error }}</p>
+                {% endfor %}
+
+                <div class="edit-modal-actions">
+                    <button type="submit" class="action-btn">Create Commitment</button>
+                    <button type="button" class="action-btn action-btn-secondary edit-cancel-btn" data-close-create-modal="true">
+                        View All
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        (function () {
+            const createModal = document.getElementById("create-commitment-modal");
+            const openCreateBtn = document.getElementById("open-create-modal-btn");
+            if (!createModal) return;
+
+            function openCreateModal(event) {
+                if (event) event.preventDefault();
+                createModal.classList.remove("is-hidden");
+            }
+
+            function closeCreateModal() {
+                createModal.classList.add("is-hidden");
+                const ownedTitle = document.getElementById("owned-by-me");
+                if (ownedTitle) {
+                    ownedTitle.scrollIntoView({ behavior: "smooth", block: "start" });
+                }
+            }
+
+            if (openCreateBtn) {
+                openCreateBtn.addEventListener("click", openCreateModal);
+            }
+
+            createModal.querySelectorAll("[data-close-create-modal='true']").forEach((node) => {
+                node.addEventListener("click", closeCreateModal);
+            });
+
+            document.addEventListener("keydown", (event) => {
+                if (event.key === "Escape" && !createModal.classList.contains("is-hidden")) {
+                    closeCreateModal();
+                }
+            });
+        })();
+    </script>
+{% endblock %}

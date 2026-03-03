@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+
+{% block content %}
+    <h1>Members: {{ commitment.title }}</h1>
+    <p><strong>Owner:</strong> {{ commitment.owner.username }}</p>
+
+    {% if members %}
+    <ul>
+        {% for member in members %}
+        <li>
+            {{ member.username }}
+            {% if member.id == commitment.owner.id %}
+                (Owner)
+            {% endif %}
+        </li>
+        {% endfor %}
+    </ul>
+    {% else %}
+    <p>No members found.</p>
+    {% endif %}
+
+    <p>
+        <a href="{{ url_for('commitments') }}">Back to Commitments</a>
+    </p>
+{% endblock %}

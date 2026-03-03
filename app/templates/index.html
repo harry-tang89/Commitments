@@ -1,0 +1,1392 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="landing-shell">
+    <header class="landing-hero">
+        {% if current_user.is_anonymous %}
+        <p class="hero-subtitle">
+            Not logged in: saved only in browser cache. After login: saved to database.
+        </p>
+        {% endif %}
+    </header>
+
+    <section class="commitment-list-wrap">
+        <h2>My Commitments</h2>
+        <ul id="quickCommitmentList" class="quick-list"></ul>
+    </section>
+    <section id="completedCommitmentsWrap" class="commitment-list-wrap completed-list-wrap is-hidden">
+        <h2>Completed Commitments</h2>
+        <ul id="completedCommitmentList" class="quick-list"></ul>
+    </section>
+    <div id="priorityCompareTriggerWrap" class="priority-compare-trigger-wrap is-hidden">
+        <button type="button" id="priorityCompareTrigger" class="priority-compare-trigger">Priority Comparison</button>
+    </div>
+
+    <section class="commitment-entry">
+        <h1>Create your commitment now.</h1>
+        <form id="quickCommitmentForm" class="quick-form">
+            <label for="quick-title">Title</label>
+            <input id="quick-title" name="title" type="text" maxlength="140" required placeholder="Example: Finish chapter 3 notes">
+
+            <label for="quick-deadline-date">Deadline Date</label>
+            <input id="quick-deadline-date" name="deadline_date" type="date" class="future-date-only" required>
+
+            <label for="quick-description">Description (optional)</label>
+            <textarea id="quick-description" name="description" rows="3" placeholder="Any extra details"></textarea>
+
+            <label for="quick-category">Category (optional)</label>
+            <select id="quick-category" name="category">
+                <option value="" selected>Select a category</option>
+                {% for value, label in quick_categories %}
+                <option value="{{ value }}">{{ label }}</option>
+                {% endfor %}
+            </select>
+
+            <div class="quick-actions">
+                <button type="submit" class="action-btn">Create Commitment</button>
+                {% if current_user.is_authenticated %}
+                <a href="{{ url_for('commitments') }}" class="action-btn action-btn-secondary">View All</a>
+                {% endif %}
+            </div>
+        </form>
+
+        <p id="quickStatus" class="quick-status" aria-live="polite"></p>
+    </section>
+</div>
+
+<div id="editCommitmentModal" class="edit-modal is-hidden" role="dialog" aria-modal="true" aria-labelledby="editCommitmentTitle">
+    <div id="editModalBackdrop" class="edit-modal-backdrop"></div>
+    <div class="edit-modal-panel">
+        <h2 id="editCommitmentTitle">Edit commitment</h2>
+        <form id="editCommitmentForm" class="quick-form" novalidate>
+            <label for="edit-title">Title</label>
+            <input id="edit-title" name="title" type="text" maxlength="140" required>
+            <p id="editTitleError" class="field-error is-hidden">Please enter a title.</p>
+
+            <label for="edit-description">Description (optional)</label>
+            <textarea id="edit-description" name="description" rows="3"></textarea>
+
+            <label for="edit-category">Category</label>
+            <select id="edit-category" name="category">
+                <option value="">Select a category</option>
+                {% for value, label in quick_categories %}
+                <option value="{{ value }}">{{ label }}</option>
+                {% endfor %}
+            </select>
+
+            <label for="edit-deadline-date">Deadline Date</label>
+            <input id="edit-deadline-date" name="deadline_date" type="date" class="future-date-only" required>
+            <p id="editDateError" class="field-error is-hidden">Please select a deadline date.</p>
+
+            <div class="edit-modal-actions">
+                <button type="submit" class="action-btn">Save Changes</button>
+                <button type="button" id="editCancelBtn" class="action-btn edit-cancel-btn">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div id="memberModal" class="edit-modal is-hidden" role="dialog" aria-modal="true" aria-labelledby="memberModalTitle">
+    <div id="memberModalBackdrop" class="edit-modal-backdrop"></div>
+    <div class="edit-modal-panel member-modal-panel">
+        <h2 id="memberModalTitle">Add member</h2>
+        <form id="memberForm" class="quick-form" novalidate>
+            <label for="member-contact">Mobile number or email address</label>
+            <input id="member-contact" name="contact" type="text" required placeholder="example@email.com or +441234567890">
+            <p id="memberError" class="field-error is-hidden">Please enter a valid mobile number or email address.</p>
+            <div class="edit-modal-actions">
+                <button type="submit" class="action-btn">Add member</button>
+                <button type="button" id="memberCancelBtn" class="action-btn edit-cancel-btn">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div id="viewMembersModal" class="edit-modal is-hidden" role="dialog" aria-modal="true" aria-labelledby="viewMembersModalTitle">
+    <div id="viewMembersModalBackdrop" class="edit-modal-backdrop"></div>
+    <div class="edit-modal-panel view-members-modal-panel">
+        <h2 id="viewMembersModalTitle">Members</h2>
+        <p id="viewMembersCommitmentTitle" class="view-members-title"></p>
+        <p id="viewMembersSummary" class="view-members-summary">Total members: --</p>
+        <p id="viewMembersError" class="field-error is-hidden">Failed to load members.</p>
+        <ul id="viewMembersList" class="view-members-list"></ul>
+        <div class="edit-modal-actions view-members-actions">
+            <button type="button" id="viewMembersCloseBtn" class="action-btn edit-cancel-btn">Close</button>
+        </div>
+    </div>
+</div>
+
+<div id="priorityCompareModal" class="edit-modal is-hidden" role="dialog" aria-modal="true" aria-label="Priority comparison">
+    <div id="priorityCompareBackdrop" class="edit-modal-backdrop"></div>
+    <div class="edit-modal-panel priority-compare-modal-panel">
+        <button type="button" id="priorityTopCloseBtn" class="modal-top-close-btn" aria-label="Close priority comparison">✕</button>
+        <p class="priority-compare-guide">
+            If you only have one hour, you can do only one task. Which option has the lower opportunity cost?
+        </p>
+        <div class="priority-compare-top">
+            <div class="priority-slot-group">
+                <div class="priority-slot-title">I choose</div>
+                <div id="prioritySlotLeft" class="priority-slot" data-slot="left">
+                    <p class="priority-slot-placeholder">Drag the first commitment from below.</p>
+                </div>
+            </div>
+            <div class="priority-slot-group">
+                <div class="priority-slot-title">The opportunity cost (what you give up by choosing this task instead of the other one)</div>
+                <div id="prioritySlotRight" class="priority-slot" data-slot="right">
+                    <p class="priority-slot-placeholder">Drag the second commitment from below.</p>
+                </div>
+            </div>
+        </div>
+        <div id="priorityPool" class="priority-pool"></div>
+        <p id="priorityCompareHint" class="quick-status priority-compare-hint"></p>
+        <div class="priority-compare-note-wrap">
+            <p class="priority-compare-note">I believe the way we arrange priorities shapes a person's life.</p>
+        </div>
+        <div class="edit-modal-actions priority-actions-center">
+            <button type="button" id="priorityAutoFillBtn" class="action-btn">Auto-fill next pair</button>
+        </div>
+    </div>
+</div>
+
+<script>
+(() => {
+    const isAuthenticated = {{ 'true' if current_user.is_authenticated else 'false' }};
+    const enableCompleteFireworks = false;
+    const initialDbCommitments = {{ (initial_commitments or [])|tojson }};
+    const categoryChoices = {{ (quick_categories or [])|tojson }};
+    const categoryLabelByValue = new Map(categoryChoices.map(([value, label]) => [value, label]));
+    const storageKey = "guest_commitments_v1";
+    const maxItems = 20;
+    let dbCommitments = Array.isArray(initialDbCommitments) ? [...initialDbCommitments] : [];
+
+    const form = document.getElementById("quickCommitmentForm");
+    const statusEl = document.getElementById("quickStatus");
+    const listEl = document.getElementById("quickCommitmentList");
+    const completedWrapEl = document.getElementById("completedCommitmentsWrap");
+    const completedListEl = document.getElementById("completedCommitmentList");
+    const priorityCompareTriggerWrap = document.getElementById("priorityCompareTriggerWrap");
+    const priorityCompareTrigger = document.getElementById("priorityCompareTrigger");
+    const editModal = document.getElementById("editCommitmentModal");
+    const editForm = document.getElementById("editCommitmentForm");
+    const editCategoryEl = document.getElementById("edit-category");
+    const editTitleEl = document.getElementById("edit-title");
+    const editDescriptionEl = document.getElementById("edit-description");
+    const editDeadlineDateEl = document.getElementById("edit-deadline-date");
+    const editCancelBtn = document.getElementById("editCancelBtn");
+    const editBackdrop = document.getElementById("editModalBackdrop");
+    const editTitleErrorEl = document.getElementById("editTitleError");
+    const editDateErrorEl = document.getElementById("editDateError");
+    const memberModal = document.getElementById("memberModal");
+    const memberModalBackdrop = document.getElementById("memberModalBackdrop");
+    const memberForm = document.getElementById("memberForm");
+    const memberContactEl = document.getElementById("member-contact");
+    const memberErrorEl = document.getElementById("memberError");
+    const memberCancelBtn = document.getElementById("memberCancelBtn");
+    const viewMembersModal = document.getElementById("viewMembersModal");
+    const viewMembersModalBackdrop = document.getElementById("viewMembersModalBackdrop");
+    const viewMembersCommitmentTitleEl = document.getElementById("viewMembersCommitmentTitle");
+    const viewMembersSummaryEl = document.getElementById("viewMembersSummary");
+    const viewMembersErrorEl = document.getElementById("viewMembersError");
+    const viewMembersListEl = document.getElementById("viewMembersList");
+    const viewMembersCloseBtn = document.getElementById("viewMembersCloseBtn");
+    const priorityCompareModal = document.getElementById("priorityCompareModal");
+    const priorityCompareBackdrop = document.getElementById("priorityCompareBackdrop");
+    const priorityTopCloseBtn = document.getElementById("priorityTopCloseBtn");
+    const priorityAutoFillBtn = document.getElementById("priorityAutoFillBtn");
+    const prioritySlotLeft = document.getElementById("prioritySlotLeft");
+    const prioritySlotRight = document.getElementById("prioritySlotRight");
+    const priorityPoolEl = document.getElementById("priorityPool");
+    const priorityCompareHintEl = document.getElementById("priorityCompareHint");
+    let editingIndex = null;
+    let managingMemberId = null;
+    let viewingMembersCommitmentId = null;
+    let openMoreIndex = null;
+    let priorityCompareDataItems = [];
+    let priorityEntryById = new Map();
+    let priorityPoolIds = [];
+    let priorityResolvedIds = [];
+    let priorityLeftId = null;
+    let priorityRightId = null;
+    let priorityUid = 0;
+
+    function currentYearStartIsoDate() {
+        const year = new Date().getFullYear();
+        return `${year}-1-1`;
+    }
+
+    function currentYearEndIsoDate() {
+        const year = new Date().getFullYear();
+        return `${year}-12-31`;
+    }
+
+    function formatIsoDateToMdy(dateStr) {
+        const raw = String(dateStr || "").trim();
+        const matched = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if (!matched) return raw;
+        return `${matched[2]}/${matched[3]}/${matched[1]}`;
+    }
+
+    function readGuestCommitments() {
+        try {
+            const raw = localStorage.getItem(storageKey);
+            if (!raw) return [];
+            const parsed = JSON.parse(raw);
+            return Array.isArray(parsed) ? parsed : [];
+        } catch (_error) {
+            return [];
+        }
+    }
+
+    function writeGuestCommitments(items) {
+        localStorage.setItem(storageKey, JSON.stringify(items.slice(0, maxItems)));
+    }
+
+    function clampPercent(value) {
+        return Math.max(0, Math.min(100, value));
+    }
+
+    function computeProgressPercent(item) {
+        const createdAtRaw = String(item.created_at || "").trim();
+        const deadlineDateRaw = String(item.deadline_date || "").trim();
+        if (!deadlineDateRaw) return 0;
+
+        const createdAt = createdAtRaw ? new Date(createdAtRaw) : new Date();
+        const deadlineEnd = new Date(`${deadlineDateRaw}T23:59:59`);
+        const now = new Date();
+
+        if (Number.isNaN(createdAt.getTime()) || Number.isNaN(deadlineEnd.getTime())) {
+            return 0;
+        }
+
+        const totalMs = deadlineEnd.getTime() - createdAt.getTime();
+        if (totalMs <= 0) {
+            return now.getTime() >= deadlineEnd.getTime() ? 100 : 0;
+        }
+
+        const elapsedMs = now.getTime() - createdAt.getTime();
+        return clampPercent((elapsedMs / totalMs) * 100);
+    }
+
+    function escapeHtml(input) {
+        return input
+            .replaceAll("&", "&amp;")
+            .replaceAll("<", "&lt;")
+            .replaceAll(">", "&gt;");
+    }
+
+    function renderList() {
+        const items = isAuthenticated ? dbCommitments : readGuestCommitments();
+        const activeItems = items.filter((item) => String(item.status || "active").toLowerCase() !== "completed");
+        const completedItems = items.filter((item) => String(item.status || "").toLowerCase() === "completed");
+        priorityCompareTriggerWrap.classList.toggle("is-hidden", activeItems.length < 2);
+
+        if (!activeItems.length && !completedItems.length) {
+            const sampleDate = currentYearEndIsoDate();
+            const sampleDateDisplay = formatIsoDateToMdy(sampleDate);
+            const sampleProgress = computeProgressPercent({
+                created_at: new Date().toISOString(),    
+                deadline_date: sampleDate,
+            }).toFixed(2);
+            listEl.innerHTML = `
+                <li class="quick-list-item quick-list-item-example">
+                    <div class="quick-list-row" style="--progress:${sampleProgress}%;">
+                        <div class="quick-list-progress-line" aria-hidden="true"></div>
+                        <div class="quick-list-main">
+                            <div class="quick-list-heading">
+                                <div class="quick-list-title">Go to the park (Example commitment)</div>
+                            </div>
+                            <div class="quick-list-desc">Hyde Park</div>
+                        </div>
+                        <div class="quick-list-date">${sampleDateDisplay}</div>
+                    </div>
+                </li>
+            `;
+            completedWrapEl.classList.add("is-hidden");
+            completedListEl.innerHTML = "";
+            return;
+        }
+
+        if (!activeItems.length) {
+            listEl.innerHTML = "";
+        } else {
+            const activeWithIndex = items
+                .map((item, idx) => ({ item, idx }))
+                .filter(({ item }) => String(item.status || "active").toLowerCase() !== "completed");
+            listEl.innerHTML = activeWithIndex.map(({ item, idx: sourceIndex }) => {
+                const title = escapeHtml(item.title || "");
+                const description = escapeHtml(item.description || "");
+                const categoryValue = String(item.category || "").trim();
+                const categoryLabelRaw = categoryLabelByValue.get(categoryValue);
+                const categoryLabel = categoryLabelRaw ? escapeHtml(categoryLabelRaw) : "";
+                const isTeamCommitment = Number(item.member_count || 1) > 1;
+                const date = escapeHtml(formatIsoDateToMdy(item.deadline_date || ""));
+                const progress = computeProgressPercent(item).toFixed(2);
+                const canEdit = Boolean(item.can_edit);
+                const canDelete = Boolean(item.can_delete);
+                const showViewMembers = isAuthenticated && isTeamCommitment && Number(item.id || 0) > 0;
+                const showExitTeam = isAuthenticated && isTeamCommitment && canEdit && !canDelete && Number(item.id || 0) > 0;
+                const moreMenuContent = `
+                    <button type="button" class="more-menu-item more-menu-edit" data-edit-index="${sourceIndex}">Edit</button>
+                    ${(isAuthenticated ? canDelete : true) ? `<button type="button" class="more-menu-item more-menu-delete" data-delete-index="${sourceIndex}">Delete</button>` : ""}
+                    ${showExitTeam ? `<button type="button" class="more-menu-item more-menu-exit-team" data-exit-team-index="${sourceIndex}">Leave</button>` : ""}
+                    ${showViewMembers ? `<button type="button" class="more-menu-item more-menu-view-members" data-view-members-id="${item.id}">View members</button>` : ""}
+                    ${isAuthenticated && canDelete ? `<button type="button" class="more-menu-item more-menu-add-member" data-add-member-id="${item.id}">Add members</button>` : ""}
+                `;
+                const actions = isAuthenticated
+                    ? (canEdit
+                        ? `<div class="quick-list-actions">
+                                <button type="button" class="complete-btn" data-complete-index="${sourceIndex}">Complete</button>
+                                <button type="button" class="more-toggle" data-more-index="${sourceIndex}">more</button>
+                                ${openMoreIndex === sourceIndex ? `
+                                    <div class="more-menu">
+                                        ${moreMenuContent}
+                                    </div>
+                                ` : ""}
+                           </div>`
+                        : "")
+                    : `<div class="quick-list-actions">
+                            <button type="button" class="complete-btn" data-complete-index="${sourceIndex}">Complete</button>
+                            <button type="button" class="more-toggle" data-more-index="${sourceIndex}">more</button>
+                            ${openMoreIndex === sourceIndex ? `
+                                <div class="more-menu">
+                                    ${moreMenuContent}
+                                </div>
+                            ` : ""}
+                       </div>`;
+                return `
+                    <li class="quick-list-item ${openMoreIndex === sourceIndex ? "quick-list-item-menu-open" : ""}">
+                        <div class="quick-list-row" style="--progress:${progress}%;">
+                            <div class="quick-list-progress-line" aria-hidden="true"></div>
+                            <div class="quick-list-main">
+                                <div class="quick-list-heading">
+                                    ${isTeamCommitment ? `<div class="quick-list-category">Team</div>` : ""}
+                                    ${categoryLabel ? `<div class="quick-list-category">${categoryLabel}</div>` : ""}
+                                    <div class="quick-list-title">${title}</div>
+                                </div>
+                                ${description ? `<div class="quick-list-desc">${description}</div>` : ""}
+                            </div>
+                            <div class="quick-list-date">${date}</div>
+                            ${actions}
+                        </div>
+                    </li>
+                `;
+            }).join("");
+        }
+
+        if (!completedItems.length) {
+            completedWrapEl.classList.add("is-hidden");
+            completedListEl.innerHTML = "";
+            return;
+        }
+
+        completedWrapEl.classList.remove("is-hidden");
+        const completedWithIndex = items
+            .map((item, idx) => ({ item, idx }))
+            .filter(({ item }) => String(item.status || "").toLowerCase() === "completed");
+        completedListEl.innerHTML = completedWithIndex.map(({ item, idx: sourceIndex }) => {
+            const title = escapeHtml(item.title || "");
+            const description = escapeHtml(item.description || "");
+            const categoryValue = String(item.category || "").trim();
+            const categoryLabelRaw = categoryLabelByValue.get(categoryValue);
+            const categoryLabel = categoryLabelRaw ? escapeHtml(categoryLabelRaw) : "";
+            const isTeamCommitment = Number(item.member_count || 1) > 1;
+            const date = escapeHtml(formatIsoDateToMdy(item.deadline_date || ""));
+            const canEdit = Boolean(item.can_edit);
+            const canDelete = Boolean(item.can_delete);
+            const canRecover = isAuthenticated ? canEdit : true;
+            const canDeleteFromMenu = isAuthenticated ? canDelete : true;
+            const completedMoreMenuContent = `
+                ${canRecover ? `<button type="button" class="more-menu-item more-menu-recover" data-recover-index="${sourceIndex}">Recover</button>` : ""}
+                ${canDeleteFromMenu ? `<button type="button" class="more-menu-item more-menu-delete" data-delete-index="${sourceIndex}">Delete</button>` : ""}
+            `;
+            const completedActions = `
+                <div class="quick-list-actions">
+                    <button type="button" class="more-toggle" data-more-index="${sourceIndex}">more</button>
+                    ${openMoreIndex === sourceIndex ? `
+                        <div class="more-menu">
+                            ${completedMoreMenuContent}
+                        </div>
+                    ` : ""}
+                </div>
+            `;
+            return `
+                <li class="quick-list-item quick-list-item-completed ${openMoreIndex === sourceIndex ? "quick-list-item-menu-open" : ""}">
+                    <div class="quick-list-row">
+                        <div class="quick-list-main">
+                            <div class="quick-list-heading">
+                                ${isTeamCommitment ? `<div class="quick-list-category">Team</div>` : ""}
+                                ${categoryLabel ? `<div class="quick-list-category">${categoryLabel}</div>` : ""}
+                                <div class="quick-list-title">${title}</div>
+                            </div>
+                            ${description ? `<div class="quick-list-desc">${description}</div>` : ""}
+                        </div>
+                        <div class="quick-list-date">${date}</div>
+                        ${completedActions}
+                    </div>
+                </li>
+            `;
+        }).join("");
+    }
+
+    function setStatus(text, isError = false) {
+        statusEl.textContent = text;
+        statusEl.classList.toggle("is-error", isError);
+    }
+
+    function getCurrentItems() {
+        return isAuthenticated ? dbCommitments : readGuestCommitments();
+    }
+
+    function setCurrentItems(nextItems) {
+        if (isAuthenticated) {
+            dbCommitments = nextItems;
+            return;
+        }
+        writeGuestCommitments(nextItems);
+    }
+
+    function closeMoreMenu(shouldRender = true) {
+        if (openMoreIndex === null) return;
+        openMoreIndex = null;
+        if (shouldRender) {
+            renderList();
+        }
+    }
+
+    function parseNonNegativeInt(value) {
+        const parsed = Number(value);
+        if (!Number.isInteger(parsed) || parsed < 0) return null;
+        return parsed;
+    }
+
+    function readTargetInt(target, attrName) {
+        if (!(target instanceof HTMLElement)) return null;
+        const raw = target.getAttribute(attrName);
+        if (raw === null) return null;
+        return parseNonNegativeInt(raw);
+    }
+
+    function todayIsoDate() {
+        const now = new Date();
+        const y = now.getFullYear();
+        const m = String(now.getMonth() + 1).padStart(2, "0");
+        const d = String(now.getDate()).padStart(2, "0");
+        return `${y}-${m}-${d}`;
+    }
+
+    function isPastIsoDate(dateStr) {
+        if (!dateStr) return false;
+        return dateStr < todayIsoDate();
+    }
+
+    function isActiveCommitment(item) {
+        return String(item.status || "active").toLowerCase() !== "completed";
+    }
+
+    function resetPriorityCompareState() {
+        priorityCompareDataItems = [];
+        priorityEntryById = new Map();
+        priorityPoolIds = [];
+        priorityResolvedIds = [];
+        priorityLeftId = null;
+        priorityRightId = null;
+        priorityCompareHintEl.textContent = "";
+        priorityCompareHintEl.classList.remove("is-error");
+    }
+
+    function priorityCardHtmlById(id) {
+        const entry = priorityEntryById.get(id);
+        if (!entry) return "";
+        const { title, description, deadlineDate } = entry;
+        return `
+            <div class="priority-card-title">${escapeHtml(title)}</div>
+            ${description ? `<div class="priority-card-desc">${escapeHtml(description)}</div>` : ""}
+            ${deadlineDate ? `<div class="priority-card-date">${escapeHtml(deadlineDate)}</div>` : ""}
+        `;
+    }
+
+    function renderPrioritySlots() {
+        if (priorityLeftId) {
+            prioritySlotLeft.innerHTML = `<div class="priority-card is-static">${priorityCardHtmlById(priorityLeftId)}</div>`;
+            prioritySlotLeft.classList.add("is-filled");
+        } else {
+            prioritySlotLeft.innerHTML = `<p class="priority-slot-placeholder">Drag the first commitment from below.</p>`;
+            prioritySlotLeft.classList.remove("is-filled");
+        }
+
+        if (priorityRightId) {
+            prioritySlotRight.innerHTML = `<div class="priority-card is-static">${priorityCardHtmlById(priorityRightId)}</div>`;
+            prioritySlotRight.classList.add("is-filled");
+        } else {
+            prioritySlotRight.innerHTML = `<p class="priority-slot-placeholder">Drag the second commitment from below.</p>`;
+            prioritySlotRight.classList.remove("is-filled");
+        }
+
+    }
+
+    function renderPriorityPool() {
+        if (!priorityPoolIds.length) {
+            priorityPoolEl.innerHTML = `<p class="priority-pool-empty">No more commitments to compare.</p>`;
+            return;
+        }
+        priorityPoolEl.innerHTML = priorityPoolIds.map((id) => `
+            <button type="button" class="priority-card" data-priority-id="${id}" draggable="true">
+                ${priorityCardHtmlById(id)}
+            </button>
+        `).join("");
+    }
+
+    function updatePriorityActionButtonLabel() {
+        if (!priorityLeftId && !priorityRightId) {
+            priorityAutoFillBtn.textContent = "Auto-fill next pair";
+            return;
+        }
+        if (priorityPoolIds.length > 0) {
+            priorityAutoFillBtn.textContent = "Reorder & Auto-fill next pair";
+            return;
+        }
+        priorityAutoFillBtn.textContent = "Reorder";
+    }
+
+    function applyPriorityOrder() {
+        if (!priorityCompareDataItems.length || !priorityEntryById.size) return;
+
+        const orderedActiveIds = [
+            ...priorityResolvedIds,
+            ...(priorityLeftId ? [priorityLeftId] : []),
+            ...(priorityRightId ? [priorityRightId] : []),
+            ...priorityPoolIds,
+        ];
+        const activeItems = orderedActiveIds
+            .map((id) => priorityEntryById.get(id)?.item)
+            .filter((item) => Boolean(item));
+        const completedItems = priorityCompareDataItems.filter((item) => !isActiveCommitment(item));
+        const nextItems = [...activeItems, ...completedItems];
+
+        setCurrentItems(nextItems);
+        priorityCompareDataItems = nextItems;
+        renderList();
+    }
+
+    function refreshPriorityCompareUi(applyOrder = true) {
+        renderPrioritySlots();
+        renderPriorityPool();
+        updatePriorityActionButtonLabel();
+        if (applyOrder) {
+            applyPriorityOrder();
+        }
+    }
+
+    function autoFillPrioritySlots() {
+        if (!priorityLeftId && priorityPoolIds.length) {
+            priorityLeftId = priorityPoolIds.shift() || null;
+        }
+        if (!priorityRightId && priorityPoolIds.length) {
+            priorityRightId = priorityPoolIds.shift() || null;
+        }
+        refreshPriorityCompareUi();
+    }
+
+    function reorderAndAutoFillNextPair() {
+        if (!priorityLeftId && !priorityRightId) {
+            autoFillPrioritySlots();
+            return;
+        }
+
+        if (priorityPoolIds.length > 0 && priorityLeftId) {
+            priorityResolvedIds.push(priorityLeftId);
+            priorityLeftId = priorityPoolIds.shift() || null;
+            if (!priorityRightId && priorityPoolIds.length > 0) {
+                priorityRightId = priorityPoolIds.shift() || null;
+            }
+            refreshPriorityCompareUi();
+            return;
+        }
+
+        applyPriorityOrder();
+        closePriorityCompareModal();
+    }
+
+    function openPriorityCompareModal() {
+        const items = isAuthenticated ? dbCommitments : readGuestCommitments();
+        const activeItems = items.filter((item) => isActiveCommitment(item));
+        if (activeItems.length < 2) {
+            setStatus("You need at least 2 active commitments for a priority comparison.", true);
+            return;
+        }
+
+        resetPriorityCompareState();
+        priorityCompareDataItems = items;
+        for (const item of activeItems) {
+            priorityUid += 1;
+            const id = `pc-${priorityUid}`;
+            priorityEntryById.set(id, {
+                item,
+                title: String(item.title || "").trim() || "Untitled",
+                description: String(item.description || "").trim(),
+                deadlineDate: formatIsoDateToMdy(String(item.deadline_date || "").trim()),
+            });
+            priorityPoolIds.push(id);
+        }
+
+        refreshPriorityCompareUi(false);
+        priorityCompareModal.classList.remove("is-hidden");
+    }
+
+    function closePriorityCompareModal() {
+        priorityCompareModal.classList.add("is-hidden");
+    }
+
+    function moveCardToSlot(cardId, slotName) {
+        if (!priorityEntryById.has(cardId)) return;
+        priorityPoolIds = priorityPoolIds.filter((id) => id !== cardId);
+
+        if (slotName === "left") {
+            if (priorityLeftId) priorityPoolIds.unshift(priorityLeftId);
+            priorityLeftId = cardId;
+        } else {
+            if (priorityRightId) priorityPoolIds.unshift(priorityRightId);
+            priorityRightId = cardId;
+        }
+        refreshPriorityCompareUi();
+    }
+
+    function swapPrioritySlots() {
+        if (!priorityLeftId || !priorityRightId) return;
+        const oldLeft = priorityLeftId;
+        priorityLeftId = priorityRightId;
+        priorityRightId = oldLeft;
+        refreshPriorityCompareUi();
+    }
+
+    function launchCenterFireworks() {
+        const existing = document.getElementById("centerFireworksOverlay");
+        if (existing) {
+            existing.remove();
+        }
+
+        const overlay = document.createElement("div");
+        overlay.id = "centerFireworksOverlay";
+        overlay.className = "center-fireworks-overlay";
+
+        const offsets = [
+            { x: 0, y: 0 },
+            { x: -145, y: -65 },
+            { x: 140, y: -40 },
+            { x: -92, y: 92 },
+            { x: 96, y: 82 },
+        ];
+
+        offsets.forEach((offset, burstIndex) => {
+            const burst = document.createElement("div");
+            burst.className = "center-firework-burst";
+            burst.style.setProperty("--x", `${offset.x}px`);
+            burst.style.setProperty("--y", `${offset.y}px`);
+            burst.style.setProperty("--burst-delay", `${burstIndex * 0.12}s`);
+
+            for (let i = 0; i < 14; i += 1) {
+                const particle = document.createElement("span");
+                particle.style.setProperty("--angle", `${(360 / 14) * i}deg`);
+                particle.style.setProperty("--delay", `${(i % 4) * 0.04}s`);
+                particle.style.setProperty("--distance", `${64 + ((i + burstIndex) % 5) * 8}px`);
+                burst.appendChild(particle);
+            }
+
+            overlay.appendChild(burst);
+        });
+
+        document.body.appendChild(overlay);
+        window.setTimeout(() => {
+            overlay.remove();
+        }, 2000);
+    }
+
+    async function completeCommitment(item) {
+        if (!item) return { ok: false, message: "Commitment not found." };
+        if (!isAuthenticated) {
+            item.status = "completed";
+            return { ok: true };
+        }
+        if (!item.id) return { ok: false, message: "Commitment id is missing." };
+
+        const response = await fetch(`/api/commitments/${item.id}/complete`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            return { ok: false, message: result.message || "Failed to complete commitment." };
+        }
+        item.status = String(result.commitment?.status || "completed");
+        return { ok: true };
+    }
+
+    async function recoverCommitment(item) {
+        if (!item) return { ok: false, message: "Commitment not found." };
+        if (!isAuthenticated) {
+            item.status = "active";
+            return { ok: true };
+        }
+        if (!item.id) return { ok: false, message: "Commitment id is missing." };
+
+        const response = await fetch(`/api/commitments/${item.id}/recover`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            return { ok: false, message: result.message || "Failed to recover commitment." };
+        }
+        item.status = String(result.commitment?.status || "active");
+        return { ok: true };
+    }
+
+    function openEditModal(index) {
+        const items = isAuthenticated ? dbCommitments : readGuestCommitments();
+        const item = items[index];
+        if (!item) return;
+        if (isAuthenticated && !item.can_edit) return;
+
+        editingIndex = index;
+        editTitleEl.value = item.title || "";
+        editCategoryEl.value = item.category || "";
+        editDescriptionEl.value = item.description || "";
+        editDeadlineDateEl.value = item.deadline_date || "";
+        editModal.classList.remove("is-hidden");
+    }
+
+    function closeEditModal() {
+        editingIndex = null;
+        editForm.reset();
+        clearEditErrors();
+        editModal.classList.add("is-hidden");
+    }
+
+    function clearEditErrors() {
+        editTitleErrorEl.classList.add("is-hidden");
+        editDateErrorEl.classList.add("is-hidden");
+        editDateErrorEl.textContent = "Please select a deadline date.";
+        editTitleEl.classList.remove("input-invalid");
+        editDeadlineDateEl.classList.remove("input-invalid");
+    }
+
+    function openMemberModal(commitmentId) {
+        managingMemberId = commitmentId;
+        memberErrorEl.classList.add("is-hidden");
+        memberContactEl.classList.remove("input-invalid");
+        memberForm.reset();
+        memberModal.classList.remove("is-hidden");
+    }
+
+    function closeMemberModal() {
+        managingMemberId = null;
+        memberModal.classList.add("is-hidden");
+    }
+
+    async function submitCommitment(payload) {
+        const response = await fetch("{{ url_for('quick_create_commitment') }}", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        });
+
+        const result = await response.json().catch(() => ({}));
+        return { ok: response.ok, status: response.status, result };
+    }
+
+    async function addMemberToCommitment(commitmentId, contact) {
+        const response = await fetch(`/api/commitments/${commitmentId}/members`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ contact }),
+        });
+        const result = await response.json().catch(() => ({}));
+        return { ok: response.ok, result };
+    }
+
+    async function exitTeamCommitment(commitmentId) {
+        const response = await fetch(`/api/commitments/${commitmentId}/leave`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+        });
+        const result = await response.json().catch(() => ({}));
+        return { ok: response.ok, result };
+    }
+
+    async function fetchCommitmentMembers(commitmentId) {
+        const response = await fetch(`/api/commitments/${commitmentId}/members`);
+        const result = await response.json().catch(() => ({}));
+        return { ok: response.ok, result };
+    }
+
+    function closeViewMembersModal() {
+        viewingMembersCommitmentId = null;
+        viewMembersModal.classList.add("is-hidden");
+    }
+
+    async function openViewMembersModal(commitmentId) {
+        viewingMembersCommitmentId = commitmentId;
+        viewMembersCommitmentTitleEl.textContent = "Loading...";
+        viewMembersSummaryEl.textContent = "Total members: --";
+        viewMembersListEl.innerHTML = "";
+        viewMembersErrorEl.classList.add("is-hidden");
+        viewMembersModal.classList.remove("is-hidden");
+
+        try {
+            const { ok, result } = await fetchCommitmentMembers(commitmentId);
+            if (!ok) {
+                viewMembersCommitmentTitleEl.textContent = "";
+                viewMembersSummaryEl.textContent = "Total members: --";
+                viewMembersErrorEl.textContent = result.message || "Failed to load members.";
+                viewMembersErrorEl.classList.remove("is-hidden");
+                return;
+            }
+            if (!Number.isInteger(viewingMembersCommitmentId) || viewingMembersCommitmentId !== commitmentId) {
+                return;
+            }
+
+            const commitmentTitle = String(result.commitment?.title || "").trim();
+            const members = Array.isArray(result.members) ? result.members : [];
+            const memberCount = Number(result.member_count || members.length || 0);
+            viewMembersCommitmentTitleEl.textContent = commitmentTitle ? `Commitment: ${commitmentTitle}` : "";
+            viewMembersSummaryEl.textContent = `Total members: ${memberCount}`;
+            viewMembersListEl.innerHTML = members.length
+                ? members.map((member) => {
+                    const username = escapeHtml(String(member.username || ""));
+                    const ownerTag = member.is_owner ? '<span class="view-members-role">Owner</span>' : "";
+                    return `<li><span>${username}</span>${ownerTag}</li>`;
+                }).join("")
+                : "<li>No members found.</li>";
+        } catch (_error) {
+            viewMembersCommitmentTitleEl.textContent = "";
+            viewMembersSummaryEl.textContent = "Total members: --";
+            viewMembersErrorEl.textContent = "Network error. Please try again.";
+            viewMembersErrorEl.classList.remove("is-hidden");
+        }
+    }
+
+    async function syncGuestCommitmentsIfLoggedIn() {
+        if (!isAuthenticated) {
+            renderList();
+            return;
+        }
+
+        const guestItems = readGuestCommitments();
+        if (!guestItems.length) {
+            renderList();
+            return;
+        }
+
+        try {
+            const response = await fetch("{{ url_for('sync_local_commitments') }}", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ commitments: guestItems }),
+            });
+            const result = await response.json().catch(() => ({}));
+
+            if (!response.ok) {
+                renderList();
+                setStatus(result.message || "Failed to auto-sync cached commitments.", true);
+                return;
+            }
+
+            const createdItems = Array.isArray(result.created_items) ? result.created_items : [];
+            const existingIds = new Set(
+                dbCommitments.map((item) => Number(item.id)).filter((id) => Number.isInteger(id))
+            );
+            for (const item of createdItems) {
+                const id = Number(item.id);
+                if (!Number.isInteger(id) || existingIds.has(id)) continue;
+                dbCommitments.unshift({
+                    id,
+                    category: String(item.category || "").trim(),
+                    title: String(item.title || "").trim(),
+                    description: String(item.description || "").trim(),
+                    deadline_date: String(item.deadline_date || "").trim(),
+                    created_at: String(item.created_at || "").trim() || new Date().toISOString(),
+                    status: String(item.status || "active").trim().toLowerCase() || "active",
+                    member_count: Number(item.member_count || 1),
+                    can_edit: Boolean(item.can_edit),
+                    can_delete: Boolean(item.can_delete),
+                });
+                existingIds.add(id);
+            }
+
+            writeGuestCommitments([]);
+            renderList();
+            const created = Number(result.created || 0);
+            const duplicates = Number(result.skipped_duplicates || 0);
+            const invalid = Number(result.skipped_invalid || 0);
+            const pieces = [];
+            pieces.push(`Auto-synced ${created} commitment(s) to your account.`);
+            if (duplicates > 0) pieces.push(`${duplicates} duplicate title(s) skipped.`);
+            if (invalid > 0) pieces.push(`${invalid} invalid item(s) skipped.`);
+            setStatus(pieces.join(" "));
+        } catch (_error) {
+            renderList();
+            setStatus("Auto-sync failed due to network error.", true);
+        }
+    }
+
+    form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const formData = new FormData(form);
+        const payload = {
+            category: String(formData.get("category") || "").trim(),
+            title: String(formData.get("title") || "").trim(),
+            description: String(formData.get("description") || "").trim(),
+            deadline_date: String(formData.get("deadline_date") || "").trim(),
+        };
+
+        if (!payload.title || !payload.deadline_date) {
+            setStatus("Please enter title and deadline date.", true);
+            return;
+        }
+        if (isPastIsoDate(payload.deadline_date)) {
+            setStatus("Deadline date cannot be earlier than today.", true);
+            return;
+        }
+
+        if (!isAuthenticated) {
+            const current = readGuestCommitments();
+            current.unshift({
+                ...payload,
+                created_at: new Date().toISOString(),
+                status: "active",
+            });
+            writeGuestCommitments(current);
+            renderList();
+            form.reset();
+            if (typeof window.applyDefaultDeadlineDate === "function") {
+                window.applyDefaultDeadlineDate();
+            }
+            setStatus("Saved in browser cache. Clearing browser cache will remove it.");
+            return;
+        }
+
+        try {
+            const { ok, result } = await submitCommitment(payload);
+            if (!ok) {
+                setStatus(result.message || "Failed to save commitment.", true);
+                return;
+            }
+
+            if (result.commitment) {
+                openMoreIndex = null;
+                dbCommitments.unshift({
+                    id: result.commitment.id,
+                    category: result.commitment.category || "",
+                    title: result.commitment.title,
+                    description: result.commitment.description || "",
+                    deadline_date: result.commitment.deadline_date,
+                    created_at: result.commitment.created_at || new Date().toISOString(),
+                    status: String(result.commitment.status || "active").toLowerCase(),
+                    member_count: Number(result.commitment.member_count || 1),
+                    can_edit: Boolean(result.commitment.can_edit),
+                    can_delete: Boolean(result.commitment.can_delete),
+                });
+                renderList();
+            }
+            form.reset();
+            if (typeof window.applyDefaultDeadlineDate === "function") {
+                window.applyDefaultDeadlineDate();
+            }
+            setStatus("Saved to database.");
+        } catch (_error) {
+            setStatus("Network error. Please try again.", true);
+        }
+    });
+
+    listEl.addEventListener("click", async (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        const moreToggle = target.closest(".more-toggle");
+        if (moreToggle instanceof HTMLElement) {
+            const index = readTargetInt(moreToggle, "data-more-index");
+            if (index === null) return;
+            openMoreIndex = openMoreIndex === index ? null : index;
+            renderList();
+            return;
+        }
+
+        if (target.classList.contains("more-menu-add-member")) {
+            const id = readTargetInt(target, "data-add-member-id");
+            if (id === null) return;
+            openMemberModal(id);
+            closeMoreMenu();
+            return;
+        }
+
+        if (target.classList.contains("more-menu-view-members")) {
+            const id = readTargetInt(target, "data-view-members-id");
+            if (id === null) return;
+            closeMoreMenu();
+            openViewMembersModal(id);
+            return;
+        }
+
+        if (target.classList.contains("more-menu-exit-team")) {
+            const index = readTargetInt(target, "data-exit-team-index");
+            if (index === null) return;
+            if (!isAuthenticated) return;
+            const item = dbCommitments[index];
+            if (!item || !item.id || item.can_delete) return;
+            try {
+                const { ok, result } = await exitTeamCommitment(item.id);
+                if (!ok) {
+                    setStatus(result.message || "Failed to leave commitment.", true);
+                    return;
+                }
+                dbCommitments = dbCommitments.filter((_it, itemIndex) => itemIndex !== index);
+                openMoreIndex = null;
+                renderList();
+                setStatus(result.message || "You left the commitment.");
+            } catch (_error) {
+                setStatus("Network error. Please try again.", true);
+            }
+            return;
+        }
+
+        if (target.classList.contains("edit-btn") || target.classList.contains("more-menu-edit")) {
+            const index = readTargetInt(target, "data-edit-index");
+            if (index === null) return;
+            closeMoreMenu(false);
+            openEditModal(index);
+            return;
+        }
+
+        if (target.classList.contains("complete-btn")) {
+            const index = readTargetInt(target, "data-complete-index");
+            if (index === null) return;
+            const items = getCurrentItems();
+            const item = items[index];
+            if (!item) return;
+            if (isAuthenticated && !item.can_edit) return;
+
+            const previousStatus = String(item.status || "active");
+            item.status = "completed";
+            if (!isAuthenticated) {
+                setCurrentItems(items);
+            }
+            openMoreIndex = null;
+            renderList();
+            setStatus("Commitment moved to completed.");
+            if (enableCompleteFireworks) {
+                launchCenterFireworks();
+            }
+
+            try {
+                if (isAuthenticated) {
+                    const result = await completeCommitment(item);
+                    if (!result.ok) {
+                        item.status = previousStatus;
+                        renderList();
+                        setStatus(result.message || "Failed to complete commitment.", true);
+                    }
+                }
+            } catch (_error) {
+                item.status = previousStatus;
+                renderList();
+                setStatus("Network error. Please try again.", true);
+            }
+            return;
+        }
+
+        if (target.classList.contains("delete-btn") || target.classList.contains("more-menu-delete")) {
+            const index = readTargetInt(target, "data-delete-index");
+            if (index === null) return;
+
+            if (isAuthenticated) {
+                const item = dbCommitments[index];
+                if (!item || !item.can_delete || !item.id) return;
+                try {
+                    const response = await fetch(`/api/commitments/${item.id}/quick`, { method: "DELETE" });
+                    const result = await response.json().catch(() => ({}));
+                    if (!response.ok) {
+                        setStatus(result.message || "Failed to delete commitment.", true);
+                        return;
+                    }
+                    dbCommitments = dbCommitments.filter((_it, itemIndex) => itemIndex !== index);
+                    openMoreIndex = null;
+                    renderList();
+                    setStatus("Commitment deleted.");
+                } catch (_error) {
+                    setStatus("Network error. Please try again.", true);
+                }
+                return;
+            }
+
+            const current = readGuestCommitments();
+            const next = current.filter((_item, itemIndex) => itemIndex !== index);
+            setCurrentItems(next);
+            openMoreIndex = null;
+            renderList();
+            setStatus("Commitment removed from browser cache.");
+        }
+    });
+
+    completedListEl.addEventListener("click", async (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        const moreToggle = target.closest(".more-toggle");
+        if (moreToggle instanceof HTMLElement) {
+            const index = readTargetInt(moreToggle, "data-more-index");
+            if (index === null) return;
+            openMoreIndex = openMoreIndex === index ? null : index;
+            renderList();
+            return;
+        }
+
+        if (target.classList.contains("more-menu-recover")) {
+            const index = readTargetInt(target, "data-recover-index");
+            if (index === null) return;
+            const items = getCurrentItems();
+            const item = items[index];
+            if (!item) return;
+            if (isAuthenticated && !item.can_edit) return;
+            try {
+                const result = await recoverCommitment(item);
+                if (!result.ok) {
+                    setStatus(result.message || "Failed to recover commitment.", true);
+                    return;
+                }
+                if (!isAuthenticated) {
+                    setCurrentItems(items);
+                }
+                openMoreIndex = null;
+                renderList();
+                setStatus("Commitment recovered to My Commitments.");
+            } catch (_error) {
+                setStatus("Network error. Please try again.", true);
+            }
+            return;
+        }
+
+        if (target.classList.contains("more-menu-delete")) {
+            const index = readTargetInt(target, "data-delete-index");
+            if (index === null) return;
+
+            if (isAuthenticated) {
+                const item = dbCommitments[index];
+                if (!item || !item.can_delete || !item.id) return;
+                try {
+                    const response = await fetch(`/api/commitments/${item.id}/quick`, { method: "DELETE" });
+                    const result = await response.json().catch(() => ({}));
+                    if (!response.ok) {
+                        setStatus(result.message || "Failed to delete commitment.", true);
+                        return;
+                    }
+                    dbCommitments = dbCommitments.filter((_it, itemIndex) => itemIndex !== index);
+                    openMoreIndex = null;
+                    renderList();
+                    setStatus("Commitment deleted.");
+                } catch (_error) {
+                    setStatus("Network error. Please try again.", true);
+                }
+                return;
+            }
+
+            const current = readGuestCommitments();
+            const next = current.filter((_item, itemIndex) => itemIndex !== index);
+            setCurrentItems(next);
+            openMoreIndex = null;
+            renderList();
+            setStatus("Commitment removed from browser cache.");
+        }
+    });
+
+    editForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (editingIndex === null) return;
+        clearEditErrors();
+
+        const title = editTitleEl.value.trim();
+        const category = editCategoryEl.value.trim();
+        const description = editDescriptionEl.value.trim();
+        const deadlineDate = editDeadlineDateEl.value.trim();
+        let hasError = false;
+        if (!title) {
+            editTitleErrorEl.classList.remove("is-hidden");
+            editTitleEl.classList.add("input-invalid");
+            hasError = true;
+        }
+        if (!deadlineDate) {
+            editDateErrorEl.classList.remove("is-hidden");
+            editDeadlineDateEl.classList.add("input-invalid");
+            hasError = true;
+        }
+        if (!hasError && isPastIsoDate(deadlineDate)) {
+            editDateErrorEl.textContent = "Deadline date cannot be earlier than today.";
+            editDateErrorEl.classList.remove("is-hidden");
+            editDeadlineDateEl.classList.add("input-invalid");
+            hasError = true;
+        }
+        if (hasError) {
+            return;
+        }
+
+        if (isAuthenticated) {
+            const item = dbCommitments[editingIndex];
+            if (!item || !item.can_edit || !item.id) return;
+            try {
+                const response = await fetch(`/api/commitments/${item.id}/quick`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        category,
+                        title,
+                        description,
+                        deadline_date: deadlineDate,
+                    }),
+                });
+                const result = await response.json().catch(() => ({}));
+                if (!response.ok) {
+                    setStatus(result.message || "Failed to update commitment.", true);
+                    return;
+                }
+
+                const updated = result.commitment || {};
+                dbCommitments[editingIndex] = {
+                    id: Number(updated.id || item.id),
+                    category: String(updated.category || category),
+                    title: String(updated.title || title),
+                    description: String(updated.description || description),
+                    deadline_date: String(updated.deadline_date || deadlineDate),
+                    created_at: String(updated.created_at || item.created_at || new Date().toISOString()),
+                    status: String(updated.status || item.status || "active").toLowerCase(),
+                    member_count: Number(updated.member_count || item.member_count || 1),
+                    can_edit: Boolean(updated.can_edit ?? item.can_edit),
+                    can_delete: Boolean(updated.can_delete ?? item.can_delete),
+                };
+                renderList();
+                closeEditModal();
+                setStatus("Commitment updated.");
+            } catch (_error) {
+                setStatus("Network error. Please try again.", true);
+            }
+            return;
+        }
+
+        const current = readGuestCommitments();
+        if (!current[editingIndex]) return;
+
+        current[editingIndex] = {
+            category,
+            title,
+            description,
+            deadline_date: deadlineDate,
+            status: String(current[editingIndex].status || "active").toLowerCase(),
+            created_at: current[editingIndex].created_at || new Date().toISOString(),
+        };
+        writeGuestCommitments(current);
+        renderList();
+        closeEditModal();
+        setStatus("Commitment updated in browser cache.");
+    });
+
+    editCancelBtn.addEventListener("click", closeEditModal);
+    editBackdrop.addEventListener("click", closeEditModal);
+    memberCancelBtn.addEventListener("click", closeMemberModal);
+    memberModalBackdrop.addEventListener("click", closeMemberModal);
+    viewMembersCloseBtn.addEventListener("click", closeViewMembersModal);
+    viewMembersModalBackdrop.addEventListener("click", closeViewMembersModal);
+    document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && !editModal.classList.contains("is-hidden")) {
+            closeEditModal();
+        }
+        if (event.key === "Escape" && !memberModal.classList.contains("is-hidden")) {
+            closeMemberModal();
+        }
+        if (event.key === "Escape" && !viewMembersModal.classList.contains("is-hidden")) {
+            closeViewMembersModal();
+        }
+        if (event.key === "Escape" && !priorityCompareModal.classList.contains("is-hidden")) {
+            closePriorityCompareModal();
+        }
+    });
+    document.addEventListener("click", (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+        if (!target.closest(".quick-list-actions")) {
+            closeMoreMenu();
+        }
+    });
+
+    memberForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (!Number.isInteger(managingMemberId)) return;
+        const contact = memberContactEl.value.trim();
+        if (!contact) {
+            memberErrorEl.textContent = "Please enter a valid mobile number or email address.";
+            memberErrorEl.classList.remove("is-hidden");
+            memberContactEl.classList.add("input-invalid");
+            return;
+        }
+        try {
+            const { ok, result } = await addMemberToCommitment(managingMemberId, contact);
+            if (!ok) {
+                memberErrorEl.textContent = result.message || "Failed to add member.";
+                memberErrorEl.classList.remove("is-hidden");
+                memberContactEl.classList.add("input-invalid");
+                return;
+            }
+            const updatedCommitmentId = managingMemberId;
+            closeMemberModal();
+            const entryIndex = dbCommitments.findIndex((it) => Number(it.id) === Number(updatedCommitmentId));
+            if (entryIndex >= 0) {
+                dbCommitments[entryIndex] = {
+                    ...dbCommitments[entryIndex],
+                    member_count: Number(result.member_count || (Number(dbCommitments[entryIndex].member_count || 1) + 1)),
+                };
+                renderList();
+            }
+            setStatus(result.message || "Member added successfully.");
+        } catch (_error) {
+            memberErrorEl.textContent = "Network error. Please try again.";
+            memberErrorEl.classList.remove("is-hidden");
+            memberContactEl.classList.add("input-invalid");
+        }
+    });
+
+    priorityCompareTrigger.addEventListener("click", openPriorityCompareModal);
+    priorityTopCloseBtn.addEventListener("click", closePriorityCompareModal);
+    priorityCompareBackdrop.addEventListener("click", closePriorityCompareModal);
+    priorityAutoFillBtn.addEventListener("click", reorderAndAutoFillNextPair);
+
+    [prioritySlotLeft, prioritySlotRight].forEach((slotEl) => {
+        slotEl.addEventListener("dragover", (event) => {
+            event.preventDefault();
+            slotEl.classList.add("is-drag-over");
+        });
+        slotEl.addEventListener("dragleave", () => {
+            slotEl.classList.remove("is-drag-over");
+        });
+        slotEl.addEventListener("drop", (event) => {
+            event.preventDefault();
+            slotEl.classList.remove("is-drag-over");
+            const droppedId = event.dataTransfer?.getData("text/plain") || "";
+            if (!droppedId) return;
+            const slotName = slotEl.getAttribute("data-slot");
+            if (slotName !== "left" && slotName !== "right") return;
+            moveCardToSlot(droppedId, slotName);
+        });
+    });
+
+    priorityPoolEl.addEventListener("dragstart", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        const card = target.closest(".priority-card");
+        if (!(card instanceof HTMLElement)) return;
+        const id = card.getAttribute("data-priority-id");
+        if (!id) return;
+        event.dataTransfer?.setData("text/plain", id);
+        event.dataTransfer?.setDragImage(card, 16, 16);
+    });
+    prioritySlotLeft.addEventListener("click", swapPrioritySlots);
+    prioritySlotRight.addEventListener("click", swapPrioritySlots);
+
+    syncGuestCommitmentsIfLoggedIn();
+})();
+</script>
+{% endblock %}
