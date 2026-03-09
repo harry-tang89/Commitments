@@ -1,0 +1,42 @@
+Commitments App - One-Page Summary
+Evidence sources: README.md, app/routes.py, app/models.py, app/templates/*,
+app/static/sw.js, app/config.py
+
+What it is
+- Commitments is a Flask web app for creating, tracking, and completing personal
+  commitments with deadline dates.
+- It supports both authenticated users (database-backed) and guest users
+  (browser localStorage), with optional sync after login.
+
+Who it's for
+- Primary persona: people managing personal goals/tasks (for example study,
+  health, travel, general) who may invite collaborators to shared commitments.
+
+What it does
+- Register/login/logout and multi-step password recovery with DOB verification.
+- Create/edit/delete commitments with title, deadline, description, and category.
+- Track status changes (active/completed) and show time-based progress percent.
+- Allow collaboration: owners add members; members view shared items or leave.
+- Provide guest mode: save commitments locally when user is not logged in.
+- Sync local commitments to DB via /api/commitments/sync-local with dedupe.
+- Support PWA behavior through manifest + service worker static-asset caching.
+
+How it works (architecture from repo evidence)
+- Frontend: Jinja templates (base/index/commitments) and inline JavaScript UI.
+- Backend: Flask routes serve HTML pages and JSON APIs (/api/commitments/*).
+- Auth/session: Flask-Login session cookies; password hash/check on User model.
+- Data: SQLAlchemy models User, Commitment, and commitment_collaborator table.
+- Storage flow: guest commitments -> localStorage; logged-in -> database;
+  sync-local endpoint migrates selected local items into DB.
+- Offline flow: service worker caches same-origin static assets and avoids
+  caching authenticated page navigations.
+- External services/background jobs: Not found in repo.
+
+How to run (minimal)
+1. Create and activate a Python virtual environment.
+2. Install dependencies: python -m pip install -r app/requirements.txt
+3. Set Flask app: export FLASK_APP=run.py
+   (PowerShell: $env:FLASK_APP = "run.py")
+4. First run DB setup: flask db init (if needed), then flask db upgrade
+5. Start: python -m flask run
+6. Open: http://127.0.0.1:5000

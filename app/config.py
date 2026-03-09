@@ -108,6 +108,18 @@ class AppConfig:
     # Same cross-site policy for the remember cookie.
     REMEMBER_COOKIE_SAMESITE = "Lax"
 
-     # Flask-SQLAlchemy expects this exact config key name, so we map our readable name
+    MAIL_HOST = os.environ.get("MAIL_HOST", "").strip()
+    MAIL_PORT = int(os.environ.get("MAIL_PORT", "587"))
+    MAIL_USERNAME = os.environ.get("MAIL_USERNAME", "").strip()
+    MAIL_PASSWORD = os.environ.get("MAIL_PASSWORD", "")
+    MAIL_USE_TLS = _read_bool_env_var("MAIL_USE_TLS", True)
+    MAIL_USE_SSL = _read_bool_env_var("MAIL_USE_SSL", False)
+    MAIL_DEFAULT_SENDER = os.environ.get("MAIL_DEFAULT_SENDER", "").strip()
+    MAIL_ENABLED = bool(MAIL_HOST and MAIL_DEFAULT_SENDER)
+    REGISTRATION_CODE_TTL_SECONDS = int(os.environ.get("REGISTRATION_CODE_TTL_SECONDS", "600"))
+    DEV_REGISTRATION_CODE_BYPASS = _read_bool_env_var("DEV_REGISTRATION_CODE_BYPASS", not IS_PRODUCTION_ENV)
+    DEV_REGISTRATION_CODE = os.environ.get("DEV_REGISTRATION_CODE", "000000").strip()
+
+    # Flask-SQLAlchemy expects this exact config key name, so we map our readable name
     # back to the expected one.
     SQLALCHEMY_DATABASE_URI = DATABASE_URI

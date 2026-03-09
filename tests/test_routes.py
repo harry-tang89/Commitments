@@ -12,7 +12,7 @@ from datetime import date, timedelta
 
 import sqlalchemy as sa
 
-from app import db
+from app import app, db
 from app.models import Commitment, User
 
 
@@ -87,19 +87,41 @@ def test_register_route_creates_user_in_database(http_client):
     WHEN:  POST /register is called with valid data.
     THEN:  The response is successful, and a User row exists in the database.
     """
-    register_response = http_client.post(
-        "/register",
-        data={
-            "username": "newuser",
-            "email": "newuser@example.com",
-            "birth_day": "1",
-            "birth_month": "1",
-            "birth_year": "2000",
-            "password": "securepass",
-            "password2": "securepass",  # typical "confirm password" field
-        },
-        follow_redirects=True,
-    )
+    captured_code: dict[str, str] = {}
+
+    def fake_send_verification_email(recipient: str, code: str) -> None:
+        captured_code["recipient"] = recipient
+        captured_code["code"] = code
+
+    app.config["MAIL_ENABLED"] = True
+    import app.routes as routes_module
+
+    original_sender = routes_module._send_registration_verification_email
+    routes_module._send_registration_verification_email = fake_send_verification_email
+    try:
+        send_code_response = http_client.post(
+            "/register/send-code",
+            data={"email": "newuser@example.com"},
+        )
+        assert send_code_response.status_code == 200
+        assert captured_code["code"]
+
+        register_response = http_client.post(
+            "/register",
+            data={
+                "username": "newuser",
+                "email": "newuser@example.com",
+                "verification_code": captured_code["code"],
+                "birth_day": "1",
+                "birth_month": "1",
+                "birth_year": "2000",
+                "password": "securepass",
+                "password2": "securepass",  # typical "confirm password" field
+            },
+            follow_redirects=True,
+        )
+    finally:
+        routes_module._send_registration_verification_email = original_sender
 
     # Query the database directly to verify persistence.
     created_user = db.session.scalar(
@@ -120,6 +142,64 @@ def test_register_page_uses_create_account_heading(http_client):
 
     assert response.status_code == 200
     assert b"Create account" in response.data
+
+
+def test_register_requires_email_verification_code(http_client):
+    response = http_client.post(
+        "/register",
+        data={
+            "username": "newuser",
+            "email": "newuser@example.com",
+            "verification_code": "123456",
+            "birth_day": "1",
+            "birth_month": "1",
+            "birth_year": "2000",
+            "password": "securepass",
+            "password2": "securepass",
+        },
+        follow_redirects=True,
+    )
+
+    created_user = db.session.scalar(
+        sa.select(User).where(User.username == "newuser")
+    )
+
+    assert response.status_code == 200
+    assert b"Please request a new email verification code." in response.data
+    assert created_user is None
+
+
+def test_register_allows_dev_bypass_code(http_client):
+    original_bypass_enabled = app.config["DEV_REGISTRATION_CODE_BYPASS"]
+    original_bypass_code = app.config["DEV_REGISTRATION_CODE"]
+    app.config["DEV_REGISTRATION_CODE_BYPASS"] = True
+    app.config["DEV_REGISTRATION_CODE"] = "000000"
+
+    try:
+        response = http_client.post(
+            "/register",
+            data={
+                "username": "bypassuser",
+                "email": "bypass@example.com",
+                "verification_code": "000000",
+                "birth_day": "1",
+                "birth_month": "1",
+                "birth_year": "2000",
+                "password": "securepass",
+                "password2": "securepass",
+            },
+            follow_redirects=True,
+        )
+    finally:
+        app.config["DEV_REGISTRATION_CODE_BYPASS"] = original_bypass_enabled
+        app.config["DEV_REGISTRATION_CODE"] = original_bypass_code
+
+    created_user = db.session.scalar(
+        sa.select(User).where(User.username == "bypassuser")
+    )
+
+    assert response.status_code == 200
+    assert created_user is not None
 
 
 def test_login_with_wrong_password_shows_error_message(http_client):
@@ -424,4 +504,3 @@ def test_sync_local_commitments_requires_login(http_client):
     )
 
     assert response.status_code == 401
-

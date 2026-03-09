@@ -14,32 +14,37 @@
                 <span class="apple-switch-slider" aria-hidden="true"></span>
             </label>
         </div>
-        <p id="settingsStatus" class="quick-status" aria-live="polite"></p>
-        <a class="action-btn action-btn-secondary" href="{{ url_for('index') }}">Back to Home</a>
+        <div class="settings-row">
+            <div class="settings-copy">
+                <p class="settings-title">Auto hide completed commitments</p>
+                <p class="settings-help">When enabled, Completed Commitments only shows the first 3 items until you tap the chevron.</p>
+            </div>
+            <label class="apple-switch" for="setting-auto-hide-completed">
+                <input type="checkbox" id="setting-auto-hide-completed">
+                <span class="apple-switch-slider" aria-hidden="true"></span>
+            </label>
+        </div>
+        <a class="action-btn action-btn-secondary settings-back-link" href="{{ url_for('index') }}">Back to Home</a>
     </section>
 </div>
 
 <script>
 (() => {
-    const settingsStorageKey = "setting_default_deadline_today_v1";
-    const toggleEl = document.getElementById("setting-default-deadline-today");
-    const statusEl = document.getElementById("settingsStatus");
-    if (!toggleEl || !statusEl) return;
+    const defaultDeadlineKey = "setting_default_deadline_today_v1";
+    const autoHideCompletedKey = "setting_auto_hide_completed_v1";
+    const deadlineToggleEl = document.getElementById("setting-default-deadline-today");
+    const autoHideToggleEl = document.getElementById("setting-auto-hide-completed");
+    if (!deadlineToggleEl || !autoHideToggleEl) return;
 
-    toggleEl.checked = localStorage.getItem(settingsStorageKey) === "1";
+    deadlineToggleEl.checked = localStorage.getItem(defaultDeadlineKey) === "1";
+    autoHideToggleEl.checked = localStorage.getItem(autoHideCompletedKey) === "1";
 
-    function setStatus(text) {
-        statusEl.textContent = text;
-        window.setTimeout(() => {
-            if (statusEl.textContent === text) {
-                statusEl.textContent = "";
-            }
-        }, 1600);
-    }
+    deadlineToggleEl.addEventListener("change", () => {
+        localStorage.setItem(defaultDeadlineKey, deadlineToggleEl.checked ? "1" : "0");
+    });
 
-    toggleEl.addEventListener("change", () => {
-        localStorage.setItem(settingsStorageKey, toggleEl.checked ? "1" : "0");
-        setStatus("Setting saved.");
+    autoHideToggleEl.addEventListener("change", () => {
+        localStorage.setItem(autoHideCompletedKey, autoHideToggleEl.checked ? "1" : "0");
     });
 })();
 </script>

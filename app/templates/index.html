@@ -12,6 +12,26 @@
 
     <section class="commitment-list-wrap">
         <h2>My Commitments</h2>
+        <div id="overdueFilterWrap" class="overdue-filter-wrap is-hidden">
+            <span class="overdue-filter-label">Overdue</span>
+            <div class="overdue-filter-menu-wrap">
+                <button
+                    type="button"
+                    id="overdueFilterToggle"
+                    class="overdue-filter-toggle"
+                    aria-haspopup="menu"
+                    aria-expanded="false"
+                >
+                    <span id="overdueFilterCurrentLabel" class="overdue-filter-current-label is-hidden">All Time</span>
+                    <span class="overdue-filter-icon" aria-hidden="true"></span>
+                </button>
+                <div id="overdueFilterMenu" class="overdue-filter-menu is-hidden" role="menu" aria-label="Filter overdue commitments">
+                    <button type="button" class="overdue-filter-option" data-overdue-filter="yesterday" role="menuitem">Past Day</button>
+                    <button type="button" class="overdue-filter-option" data-overdue-filter="week" role="menuitem">Past 7 Days</button>
+                    <button type="button" class="overdue-filter-option" data-overdue-filter="all" role="menuitem">All Time</button>
+                </div>
+            </div>
+        </div>
         <ul id="quickCommitmentList" class="quick-list"></ul>
     </section>
     <section id="completedCommitmentsWrap" class="commitment-list-wrap completed-list-wrap is-hidden">
@@ -156,12 +176,20 @@
     const categoryChoices = {{ (quick_categories or [])|tojson }};
     const categoryLabelByValue = new Map(categoryChoices.map(([value, label]) => [value, label]));
     const storageKey = "guest_commitments_v1";
+    const autoHideCompletedKey = "setting_auto_hide_completed_v1";
+    const completionStampStorageKey = "completed_commitment_stamps_v1";
+    const completedVisibleCountWhenCollapsed = 3;
     const maxItems = 20;
     let dbCommitments = Array.isArray(initialDbCommitments) ? [...initialDbCommitments] : [];
+    let completedListExpanded = false;
 
     const form = document.getElementById("quickCommitmentForm");
     const statusEl = document.getElementById("quickStatus");
     const listEl = document.getElementById("quickCommitmentList");
+    const overdueFilterWrap = document.getElementById("overdueFilterWrap");
+    const overdueFilterToggle = document.getElementById("overdueFilterToggle");
+    const overdueFilterMenu = document.getElementById("overdueFilterMenu");
+    const overdueFilterCurrentLabel = document.getElementById("overdueFilterCurrentLabel");
     const completedWrapEl = document.getElementById("completedCommitmentsWrap");
     const completedListEl = document.getElementById("completedCommitmentList");
     const priorityCompareTriggerWrap = document.getElementById("priorityCompareTriggerWrap");
@@ -208,6 +236,8 @@
     let priorityLeftId = null;
     let priorityRightId = null;
     let priorityUid = 0;
+    let overdueFilterValue = "all";
+    let overdueFilterMenuOpen = false;
 
     function currentYearStartIsoDate() {
         const year = new Date().getFullYear();
@@ -239,6 +269,67 @@
 
     function writeGuestCommitments(items) {
         localStorage.setItem(storageKey, JSON.stringify(items.slice(0, maxItems)));
+    }
+
+    function readCompletionStampMap() {
+        try {
+            const raw = localStorage.getItem(completionStampStorageKey);
+            if (!raw) return {};
+            const parsed = JSON.parse(raw);
+            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+            return parsed;
+        } catch (_error) {
+            return {};
+        }
+    }
+
+    function writeCompletionStampMap(stampMap) {
+        localStorage.setItem(completionStampStorageKey, JSON.stringify(stampMap));
+    }
+
+    function setCompletionStamp(commitmentId, epochMs) {
+        const normalizedId = Number(commitmentId);
+        if (!Number.isInteger(normalizedId) || normalizedId <= 0) return;
+        const stampMap = readCompletionStampMap();
+        stampMap[String(normalizedId)] = Number(epochMs);
+        writeCompletionStampMap(stampMap);
+    }
+
+    function clearCompletionStamp(commitmentId) {
+        const normalizedId = Number(commitmentId);
+        if (!Number.isInteger(normalizedId) || normalizedId <= 0) return;
+        const stampMap = readCompletionStampMap();
+        delete stampMap[String(normalizedId)];
+        writeCompletionStampMap(stampMap);
+    }
+
+    function parseIsoToMillis(raw) {
+        const text = String(raw || "").trim();
+        if (!text) return null;
+        const parsed = Date.parse(text);
+        if (!Number.isFinite(parsed)) return null;
+        return parsed;
+    }
+
+    function completedSortMillisForItem(item, stampMap) {
+        const completedAtMs = parseIsoToMillis(item.completed_at);
+        if (completedAtMs !== null) return completedAtMs;
+
+        const idValue = Number(item.id);
+        if (Number.isInteger(idValue) && idValue > 0) {
+            const mappedValue = Number(stampMap[String(idValue)]);
+            if (Number.isFinite(mappedValue)) return mappedValue;
+        }
+
+        const createdAtMs = parseIsoToMillis(item.created_at);
+        if (createdAtMs !== null) return createdAtMs;
+
+        const deadlineDate = String(item.deadline_date || "").trim();
+        if (deadlineDate) {
+            const deadlineMs = parseIsoToMillis(`${deadlineDate}T23:59:59`);
+            if (deadlineMs !== null) return deadlineMs;
+        }
+        return 0;
     }
 
     function clampPercent(value) {
@@ -308,17 +399,26 @@
 
         if (!activeItems.length) {
             listEl.innerHTML = "";
+            syncOverdueFilterUi(false, false);
         } else {
             const activeWithIndex = items
                 .map((item, idx) => ({ item, idx }))
                 .filter(({ item }) => String(item.status || "active").toLowerCase() !== "completed");
-            listEl.innerHTML = activeWithIndex.map(({ item, idx: sourceIndex }) => {
+            const nonOverdueActiveWithIndex = activeWithIndex
+                .filter(({ item }) => !isPastIsoDate(String(item.deadline_date || "").trim()));
+            const allOverdueActiveWithIndex = activeWithIndex
+                .filter(({ item }) => isPastIsoDate(String(item.deadline_date || "").trim()));
+            const overdueActiveWithIndex = activeWithIndex
+                .filter(({ item }) => matchesOverdueFilter(String(item.deadline_date || "").trim()));
+
+            const renderActiveItem = ({ item, idx: sourceIndex }) => {
                 const title = escapeHtml(item.title || "");
                 const description = escapeHtml(item.description || "");
                 const categoryValue = String(item.category || "").trim();
                 const categoryLabelRaw = categoryLabelByValue.get(categoryValue);
                 const categoryLabel = categoryLabelRaw ? escapeHtml(categoryLabelRaw) : "";
                 const isTeamCommitment = Number(item.member_count || 1) > 1;
+                const isOverdue = isPastIsoDate(String(item.deadline_date || "").trim());
                 const date = escapeHtml(formatIsoDateToMdy(item.deadline_date || ""));
                 const progress = computeProgressPercent(item).toFixed(2);
                 const canEdit = Boolean(item.can_edit);
@@ -328,9 +428,10 @@
                 const moreMenuContent = `
                     <button type="button" class="more-menu-item more-menu-edit" data-edit-index="${sourceIndex}">Edit</button>
                     ${(isAuthenticated ? canDelete : true) ? `<button type="button" class="more-menu-item more-menu-delete" data-delete-index="${sourceIndex}">Delete</button>` : ""}
+                    ${isOverdue ? `<button type="button" class="more-menu-item more-menu-create-new-one" data-create-new-one-index="${sourceIndex}">Duplicate</button>` : ""}
+                    ${isAuthenticated && canDelete ? `<button type="button" class="more-menu-item more-menu-add-member" data-add-member-id="${item.id}">Add members</button>` : ""}
                     ${showExitTeam ? `<button type="button" class="more-menu-item more-menu-exit-team" data-exit-team-index="${sourceIndex}">Leave</button>` : ""}
                     ${showViewMembers ? `<button type="button" class="more-menu-item more-menu-view-members" data-view-members-id="${item.id}">View members</button>` : ""}
-                    ${isAuthenticated && canDelete ? `<button type="button" class="more-menu-item more-menu-add-member" data-add-member-id="${item.id}">Add members</button>` : ""}
                 `;
                 const actions = isAuthenticated
                     ? (canEdit
@@ -370,12 +471,18 @@
                         </div>
                     </li>
                 `;
-            }).join("");
+            };
+
+            const normalHtml = nonOverdueActiveWithIndex.map(renderActiveItem).join("");
+            const overdueHtml = overdueActiveWithIndex.map(renderActiveItem).join("");
+            syncOverdueFilterUi(allOverdueActiveWithIndex.length > 0, overdueActiveWithIndex.length > 0);
+            listEl.innerHTML = `${normalHtml}${overdueHtml}`;
         }
 
         if (!completedItems.length) {
             completedWrapEl.classList.add("is-hidden");
             completedListEl.innerHTML = "";
+            completedListExpanded = false;
             return;
         }
 
@@ -383,7 +490,18 @@
         const completedWithIndex = items
             .map((item, idx) => ({ item, idx }))
             .filter(({ item }) => String(item.status || "").toLowerCase() === "completed");
-        completedListEl.innerHTML = completedWithIndex.map(({ item, idx: sourceIndex }) => {
+        const completionStampMap = readCompletionStampMap();
+        completedWithIndex.sort((left, right) => {
+            const rightMs = completedSortMillisForItem(right.item, completionStampMap);
+            const leftMs = completedSortMillisForItem(left.item, completionStampMap);
+            if (rightMs !== leftMs) return rightMs - leftMs;
+            return right.idx - left.idx;
+        });
+        const autoHideCompletedEnabled = localStorage.getItem(autoHideCompletedKey) === "1";
+        const canCollapseCompleted = autoHideCompletedEnabled && completedWithIndex.length > completedVisibleCountWhenCollapsed;
+        const shouldCollapseCompleted = canCollapseCompleted && !completedListExpanded;
+
+        const renderCompletedItem = ({ item, idx: sourceIndex }) => {
             const title = escapeHtml(item.title || "");
             const description = escapeHtml(item.description || "");
             const categoryValue = String(item.category || "").trim();
@@ -394,8 +512,10 @@
             const canEdit = Boolean(item.can_edit);
             const canDelete = Boolean(item.can_delete);
             const canRecover = isAuthenticated ? canEdit : true;
+            const canCreateNewOne = isAuthenticated ? canEdit : true;
             const canDeleteFromMenu = isAuthenticated ? canDelete : true;
             const completedMoreMenuContent = `
+                ${canCreateNewOne ? `<button type="button" class="more-menu-item more-menu-create-new-one" data-create-new-one-index="${sourceIndex}">Duplicate</button>` : ""}
                 ${canRecover ? `<button type="button" class="more-menu-item more-menu-recover" data-recover-index="${sourceIndex}">Recover</button>` : ""}
                 ${canDeleteFromMenu ? `<button type="button" class="more-menu-item more-menu-delete" data-delete-index="${sourceIndex}">Delete</button>` : ""}
             `;
@@ -425,7 +545,94 @@
                     </div>
                 </li>
             `;
-        }).join("");
+        };
+
+        if (shouldCollapseCompleted) {
+            const visibleItems = completedWithIndex
+                .slice(0, completedVisibleCountWhenCollapsed)
+                .map(renderCompletedItem)
+                .join("");
+            const restItems = completedWithIndex
+                .slice(completedVisibleCountWhenCollapsed)
+                .map(renderCompletedItem)
+                .join("");
+            completedListEl.innerHTML = `
+                ${visibleItems}
+                <li id="completedRestWrap" class="completed-rest-wrap is-collapsed">
+                    <ul class="completed-rest-list">
+                        ${restItems}
+                    </ul>
+                </li>
+                <li class="completed-collapse-toggle-item">
+                    <button
+                        type="button"
+                        class="completed-collapse-toggle"
+                        data-completed-collapse-toggle="1"
+                        aria-label="Show all completed commitments"
+                        aria-expanded="false"
+                    >
+                        <span class="completed-collapse-chevron" aria-hidden="true"></span>
+                    </button>
+                </li>
+            `;
+            setCompletedRestHeight(true);
+            return;
+        }
+
+        if (canCollapseCompleted) {
+            const visibleItems = completedWithIndex
+                .slice(0, completedVisibleCountWhenCollapsed)
+                .map(renderCompletedItem)
+                .join("");
+            const restItems = completedWithIndex
+                .slice(completedVisibleCountWhenCollapsed)
+                .map(renderCompletedItem)
+                .join("");
+            completedListEl.innerHTML = `
+                ${visibleItems}
+                <li id="completedRestWrap" class="completed-rest-wrap">
+                    <ul class="completed-rest-list">
+                        ${restItems}
+                    </ul>
+                </li>
+                <li class="completed-collapse-toggle-item">
+                    <button
+                        type="button"
+                        class="completed-collapse-toggle is-open"
+                        data-completed-collapse-toggle="1"
+                        aria-label="Hide completed commitments"
+                        aria-expanded="true"
+                    >
+                        <span class="completed-collapse-chevron" aria-hidden="true"></span>
+                    </button>
+                </li>
+            `;
+            setCompletedRestHeight(false);
+            return;
+        }
+
+        completedListEl.innerHTML = completedWithIndex.map(renderCompletedItem).join("");
+    }
+
+    function setCompletedRestHeight(shouldCollapse) {
+        const restWrap = document.getElementById("completedRestWrap");
+        if (!(restWrap instanceof HTMLElement)) return;
+        const restList = restWrap.querySelector(".completed-rest-list");
+        if (!(restList instanceof HTMLElement)) return;
+
+        const contentHeight = restList.scrollHeight;
+        if (shouldCollapse) {
+            restWrap.style.transition =
+                "max-height 1.15s cubic-bezier(0.32, 0.72, 0, 1), opacity 0.95s ease";
+            restWrap.classList.add("is-collapsed");
+            restWrap.style.maxHeight = "0px";
+            return;
+        }
+
+        restWrap.style.transition =
+            "max-height 0.75s cubic-bezier(0.32, 0.72, 0, 1), opacity 0.6s ease";
+        restWrap.classList.remove("is-collapsed");
+        restWrap.style.maxHeight = `${contentHeight}px`;
     }
 
     function setStatus(text, isError = false) {
@@ -477,6 +684,47 @@
     function isPastIsoDate(dateStr) {
         if (!dateStr) return false;
         return dateStr < todayIsoDate();
+    }
+
+    function isoDateOffsetFromToday(daysAgo) {
+        const now = new Date();
+        now.setHours(0, 0, 0, 0);
+        now.setDate(now.getDate() - daysAgo);
+        const y = now.getFullYear();
+        const m = String(now.getMonth() + 1).padStart(2, "0");
+        const d = String(now.getDate()).padStart(2, "0");
+        return `${y}-${m}-${d}`;
+    }
+
+    function overdueFilterLabel(value) {
+        if (value === "yesterday") return "Past Day";
+        if (value === "week") return "Past 7 Days";
+        return "All Time";
+    }
+
+    function matchesOverdueFilter(dateStr) {
+        const normalizedDate = String(dateStr || "").trim();
+        if (!isPastIsoDate(normalizedDate)) return false;
+        if (overdueFilterValue === "all") return true;
+        if (overdueFilterValue === "yesterday") {
+            return normalizedDate === isoDateOffsetFromToday(1);
+        }
+        if (overdueFilterValue === "week") {
+            return normalizedDate >= isoDateOffsetFromToday(7) && normalizedDate <= isoDateOffsetFromToday(1);
+        }
+        return true;
+    }
+
+    function syncOverdueFilterUi(hasAnyOverdueItems, hasVisibleOverdueItems) {
+        if (!(overdueFilterWrap instanceof HTMLElement)) return;
+        overdueFilterWrap.classList.toggle("is-hidden", !hasAnyOverdueItems);
+        overdueFilterCurrentLabel.textContent = overdueFilterLabel(overdueFilterValue);
+        overdueFilterCurrentLabel.classList.toggle("is-hidden", overdueFilterValue === "all");
+        overdueFilterToggle.setAttribute("aria-expanded", overdueFilterMenuOpen ? "true" : "false");
+        overdueFilterToggle.setAttribute("title", `Overdue filter: ${overdueFilterLabel(overdueFilterValue)}`);
+        overdueFilterToggle.classList.toggle("is-open", overdueFilterMenuOpen);
+        overdueFilterToggle.classList.toggle("is-dimmed", hasAnyOverdueItems && !hasVisibleOverdueItems);
+        overdueFilterMenu.classList.toggle("is-hidden", !overdueFilterMenuOpen);
     }
 
     function isActiveCommitment(item) {
@@ -705,6 +953,7 @@
         if (!item) return { ok: false, message: "Commitment not found." };
         if (!isAuthenticated) {
             item.status = "completed";
+            item.completed_at = new Date().toISOString();
             return { ok: true };
         }
         if (!item.id) return { ok: false, message: "Commitment id is missing." };
@@ -725,6 +974,7 @@
         if (!item) return { ok: false, message: "Commitment not found." };
         if (!isAuthenticated) {
             item.status = "active";
+            item.completed_at = null;
             return { ok: true };
         }
         if (!item.id) return { ok: false, message: "Commitment id is missing." };
@@ -738,7 +988,60 @@
             return { ok: false, message: result.message || "Failed to recover commitment." };
         }
         item.status = String(result.commitment?.status || "active");
+        clearCompletionStamp(item.id);
         return { ok: true };
+    }
+
+    async function createNewCommitmentFromCompleted(index) {
+        const items = getCurrentItems();
+        const source = items[index];
+        if (!source) return;
+
+        const payload = {
+            category: String(source.category || "").trim(),
+            title: String(source.title || "").trim(),
+            description: String(source.description || "").trim(),
+            deadline_date: todayIsoDate(),
+        };
+        if (!payload.title) {
+            setStatus("Cannot create a new one from an item without a title.", true);
+            return;
+        }
+
+        if (isAuthenticated) {
+            const { ok, result } = await submitCommitment(payload);
+            if (!ok || !result?.commitment) {
+                setStatus(result?.message || "Failed to create a new commitment.", true);
+                return;
+            }
+            dbCommitments.unshift({
+                id: result.commitment.id,
+                category: String(result.commitment.category || "").trim(),
+                title: String(result.commitment.title || "").trim(),
+                description: String(result.commitment.description || "").trim(),
+                deadline_date: String(result.commitment.deadline_date || "").trim(),
+                created_at: String(result.commitment.created_at || "").trim() || new Date().toISOString(),
+                status: String(result.commitment.status || "active").toLowerCase(),
+                member_count: Number(result.commitment.member_count || 1),
+                can_edit: Boolean(result.commitment.can_edit),
+                can_delete: Boolean(result.commitment.can_delete),
+            });
+            openMoreIndex = null;
+            renderList();
+            setStatus("Created a new commitment with today as the deadline.");
+            return;
+        }
+
+        const current = readGuestCommitments();
+        current.unshift({
+            ...payload,
+            created_at: new Date().toISOString(),
+            status: "active",
+        });
+        writeGuestCommitments(current);
+        openMoreIndex = null;
+        renderList();
+        setStatus("Created a new commitment in browser cache with today as the deadline.");
     }
 
     function openEditModal(index) {
@@ -1048,6 +1351,21 @@
             return;
         }
 
+        if (target.classList.contains("more-menu-create-new-one")) {
+            const index = readTargetInt(target, "data-create-new-one-index");
+            if (index === null) return;
+            const items = getCurrentItems();
+            const item = items[index];
+            if (!item) return;
+            if (isAuthenticated && !item.can_edit) return;
+            try {
+                await createNewCommitmentFromCompleted(index);
+            } catch (_error) {
+                setStatus("Network error. Please try again.", true);
+            }
+            return;
+        }
+
         if (target.classList.contains("edit-btn") || target.classList.contains("more-menu-edit")) {
             const index = readTargetInt(target, "data-edit-index");
             if (index === null) return;
@@ -1065,7 +1383,18 @@
             if (isAuthenticated && !item.can_edit) return;
 
             const previousStatus = String(item.status || "active");
+            const previousCompletedAt = item.completed_at;
+            const completionStampMap = readCompletionStampMap();
+            const itemId = Number(item.id);
+            const completionStampKey = Number.isInteger(itemId) && itemId > 0 ? String(itemId) : null;
+            const previousCompletionStamp = completionStampKey ? completionStampMap[completionStampKey] : undefined;
             item.status = "completed";
+            if (isAuthenticated && completionStampKey) {
+                setCompletionStamp(item.id, Date.now());
+            }
+            if (!isAuthenticated) {
+                item.completed_at = new Date().toISOString();
+            }
             if (!isAuthenticated) {
                 setCurrentItems(items);
             }
@@ -1081,12 +1410,28 @@
                     const result = await completeCommitment(item);
                     if (!result.ok) {
                         item.status = previousStatus;
+                        item.completed_at = previousCompletedAt;
+                        if (completionStampKey) {
+                            if (previousCompletionStamp === undefined) {
+                                clearCompletionStamp(item.id);
+                            } else {
+                                setCompletionStamp(item.id, Number(previousCompletionStamp));
+                            }
+                        }
                         renderList();
                         setStatus(result.message || "Failed to complete commitment.", true);
                     }
                 }
             } catch (_error) {
                 item.status = previousStatus;
+                item.completed_at = previousCompletedAt;
+                if (completionStampKey) {
+                    if (previousCompletionStamp === undefined) {
+                        clearCompletionStamp(item.id);
+                    } else {
+                        setCompletionStamp(item.id, Number(previousCompletionStamp));
+                    }
+                }
                 renderList();
                 setStatus("Network error. Please try again.", true);
             }
@@ -1107,6 +1452,7 @@
                         setStatus(result.message || "Failed to delete commitment.", true);
                         return;
                     }
+                    clearCompletionStamp(item.id);
                     dbCommitments = dbCommitments.filter((_it, itemIndex) => itemIndex !== index);
                     openMoreIndex = null;
                     renderList();
@@ -1126,9 +1472,43 @@
         }
     });
 
+    overdueFilterToggle.addEventListener("click", () => {
+        if (overdueFilterWrap.classList.contains("is-hidden")) return;
+        overdueFilterMenuOpen = !overdueFilterMenuOpen;
+        syncOverdueFilterUi(true, true);
+    });
+
+    overdueFilterMenu.addEventListener("click", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        const option = target.closest("[data-overdue-filter]");
+        if (!(option instanceof HTMLElement)) return;
+        const nextValue = String(option.getAttribute("data-overdue-filter") || "").trim();
+        if (!nextValue) return;
+        overdueFilterValue = nextValue;
+        overdueFilterMenuOpen = false;
+        renderList();
+    });
+
     completedListEl.addEventListener("click", async (event) => {
         const target = event.target;
         if (!(target instanceof HTMLElement)) return;
+        const collapseToggle = target.closest("[data-completed-collapse-toggle='1']");
+        if (collapseToggle instanceof HTMLElement) {
+            completedListExpanded = !completedListExpanded;
+            openMoreIndex = null;
+            const toggleBtn = collapseToggle;
+            const nowExpanded = completedListExpanded;
+            toggleBtn.classList.toggle("is-open", nowExpanded);
+            toggleBtn.setAttribute("aria-expanded", nowExpanded ? "true" : "false");
+            toggleBtn.setAttribute(
+                "aria-label",
+                nowExpanded ? "Hide completed commitments" : "Show all completed commitments"
+            );
+            setCompletedRestHeight(!nowExpanded);
+            return;
+        }
+
         const moreToggle = target.closest(".more-toggle");
         if (moreToggle instanceof HTMLElement) {
             const index = readTargetInt(moreToggle, "data-more-index");
@@ -1163,6 +1543,21 @@
             return;
         }
 
+        if (target.classList.contains("more-menu-create-new-one")) {
+            const index = readTargetInt(target, "data-create-new-one-index");
+            if (index === null) return;
+            const items = getCurrentItems();
+            const item = items[index];
+            if (!item) return;
+            if (isAuthenticated && !item.can_edit) return;
+            try {
+                await createNewCommitmentFromCompleted(index);
+            } catch (_error) {
+                setStatus("Network error. Please try again.", true);
+            }
+            return;
+        }
+
         if (target.classList.contains("more-menu-delete")) {
             const index = readTargetInt(target, "data-delete-index");
             if (index === null) return;
@@ -1177,6 +1572,7 @@
                         setStatus(result.message || "Failed to delete commitment.", true);
                         return;
                     }
+                    clearCompletionStamp(item.id);
                     dbCommitments = dbCommitments.filter((_it, itemIndex) => itemIndex !== index);
                     openMoreIndex = null;
                     renderList();
@@ -1308,6 +1704,14 @@
     document.addEventListener("click", (event) => {
         const target = event.target;
         if (!(target instanceof Element)) return;
+        if (
+            overdueFilterMenuOpen
+            && !target.closest("#overdueFilterMenu")
+            && !target.closest("#overdueFilterToggle")
+        ) {
+            overdueFilterMenuOpen = false;
+            syncOverdueFilterUi(!overdueFilterWrap.classList.contains("is-hidden"), true);
+        }
         if (!target.closest(".quick-list-actions")) {
             closeMoreMenu();
         }

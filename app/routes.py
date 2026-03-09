@@ -1,7 +1,11 @@
-from flask import render_template, redirect, url_for, flash, request, abort, jsonify, send_from_directory
+from flask import render_template, redirect, url_for, flash, request, abort, jsonify, send_from_directory, session
 from urllib.parse import urlsplit
 from datetime import datetime, time, timezone, date
+from email.message import EmailMessage
+import hashlib
 import re
+import secrets
+import smtplib
 from app import app
 from app.forms import (
     RegistrationForm,
@@ -28,6 +32,7 @@ CATEGORY_CHOICES = [
 CATEGORY_VALUES = {value for value, _label in CATEGORY_CHOICES}
 PASSWORD_MIN_LENGTH = 8
 GENERIC_RECOVERY_FAILURE = "We could not verify those details."
+REGISTRATION_SESSION_KEY = "registration_email_verification"
 
 
 def _normalize_datetime(dt: datetime) -> datetime:
@@ -165,6 +170,86 @@ def _find_user_by_contact_identifier(raw_contact: str) -> User | None:
     
     # Email-only lookup (phone numbers will never match unless you store them in User.email).
     return db.session.scalar(sa.select(User).where(User.email == contact))
+
+
+def _build_registration_code_hash(email: str, code: str) -> str:
+    payload = f"{app.config['SECRET_KEY']}:{email}:{code}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _clear_registration_verification() -> None:
+    session.pop(REGISTRATION_SESSION_KEY, None)
+
+
+def _send_email_message(recipient: str, subject: str, body: str) -> None:
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = app.config["MAIL_DEFAULT_SENDER"]
+    message["To"] = recipient
+    message.set_content(body)
+
+    if app.config["MAIL_USE_SSL"]:
+        with smtplib.SMTP_SSL(app.config["MAIL_HOST"], app.config["MAIL_PORT"]) as smtp:
+            if app.config["MAIL_USERNAME"]:
+                smtp.login(app.config["MAIL_USERNAME"], app.config["MAIL_PASSWORD"])
+            smtp.send_message(message)
+        return
+
+    with smtplib.SMTP(app.config["MAIL_HOST"], app.config["MAIL_PORT"]) as smtp:
+        if app.config["MAIL_USE_TLS"]:
+            smtp.starttls()
+        if app.config["MAIL_USERNAME"]:
+            smtp.login(app.config["MAIL_USERNAME"], app.config["MAIL_PASSWORD"])
+        smtp.send_message(message)
+
+
+def _send_registration_verification_email(recipient: str, code: str) -> None:
+    ttl_minutes = max(1, int(app.config["REGISTRATION_CODE_TTL_SECONDS"]) // 60)
+    body = (
+        "Your Commitments registration verification code is "
+        f"{code}.\n\nThis code expires in {ttl_minutes} minutes."
+    )
+    _send_email_message(recipient, "Your Commitments verification code", body)
+
+
+def _issue_registration_code(email: str) -> None:
+    normalized_email = email.strip().lower()
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    expires_at = int(datetime.now(timezone.utc).timestamp()) + int(
+        app.config["REGISTRATION_CODE_TTL_SECONDS"]
+    )
+    session[REGISTRATION_SESSION_KEY] = {
+        "email": normalized_email,
+        "code_hash": _build_registration_code_hash(normalized_email, code),
+        "expires_at": expires_at,
+        "verified": False,
+    }
+    _send_registration_verification_email(normalized_email, code)
+
+
+def _validate_registration_code(email: str, code: str) -> tuple[bool, str | None]:
+    verification_state = session.get(REGISTRATION_SESSION_KEY) or {}
+    normalized_email = email.strip().lower()
+    normalized_code = (code or "").strip()
+
+    if (
+        app.config["DEV_REGISTRATION_CODE_BYPASS"]
+        and normalized_code
+        and normalized_code == app.config["DEV_REGISTRATION_CODE"]
+    ):
+        return True, None
+
+    if verification_state.get("email") != normalized_email:
+        return False, "Please request a new email verification code."
+    if int(verification_state.get("expires_at", 0)) < int(datetime.now(timezone.utc).timestamp()):
+        _clear_registration_verification()
+        return False, "Your email verification code has expired. Request a new one."
+    if verification_state.get("code_hash") != _build_registration_code_hash(normalized_email, normalized_code):
+        return False, "Email verification code is incorrect."
+
+    verification_state["verified"] = True
+    session[REGISTRATION_SESSION_KEY] = verification_state
+    return True, None
 
 
 def _generate_unique_username(base_value: str) -> str:
@@ -557,6 +642,39 @@ def forgot_password():
     return render_template('forgot_password.html', title='Forgot Password', form=form, stage=stage)
 
 
+@app.route('/register/send-code', methods=['POST'])
+def send_registration_code():
+    if current_user.is_authenticated:
+        return jsonify({"ok": False, "message": "You are already signed in."}), 400
+
+    csrf_form = EmptyForm()
+    if not csrf_form.validate_on_submit():
+        return jsonify({"ok": False, "message": "Invalid request."}), 400
+
+    email = (request.form.get("email") or "").strip().lower()
+    if not EMAIL_REGEX.fullmatch(email):
+        return jsonify({"ok": False, "message": "Enter a valid email address."}), 400
+
+    try:
+        existing_user_id = db.session.scalar(sa.select(User.id).where(User.email == email))
+        if existing_user_id is not None:
+            return jsonify({"ok": False, "message": "Email already registered. Please use a different email address."}), 400
+        if not app.config["MAIL_ENABLED"]:
+            return jsonify({"ok": False, "message": "Email sending is not configured on the server."}), 503
+
+        _issue_registration_code(email)
+    except SQLAlchemyError:
+        app.logger.exception("Database error while preparing registration verification")
+        db.session.rollback()
+        return jsonify({"ok": False, "message": "Database is not ready. Run migrations and try again."}), 500
+    except OSError:
+        app.logger.exception("Email delivery failed for registration verification")
+        _clear_registration_verification()
+        return jsonify({"ok": False, "message": "We could not send the email verification code. Try again later."}), 502
+
+    return jsonify({"ok": True, "message": "Verification code sent. Check your email inbox."})
+
+
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     """
@@ -578,6 +696,14 @@ def register():
     try:
         if form.validate_on_submit():
             contact = _normalize_contact(form.email.data or "")
+            verification_ok, verification_message = _validate_registration_code(
+                contact,
+                form.verification_code.data or "",
+            )
+            if not verification_ok:
+                form.verification_code.errors.append(verification_message)
+                return render_template('register.html', title='Create account', form=form)
+
             username_input = (form.username.data or "").strip()
             if username_input:
                 username_value = username_input
@@ -601,6 +727,7 @@ def register():
 
             try:
                 db.session.commit()
+                _clear_registration_verification()
                 login_user(user)
                 return redirect(url_for('index'))
 

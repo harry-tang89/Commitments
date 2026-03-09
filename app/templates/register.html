@@ -20,6 +20,33 @@
                 {% for error in form.email.errors %}
                     <p class="auth-error">{{ error }}</p>
                 {% endfor %}
+                <div class="auth-inline-action">
+                    <button
+                        type="button"
+                        class="apple-link-btn auth-code-btn"
+                        id="sendVerificationCodeBtn"
+                        data-endpoint="{{ url_for('send_registration_code') }}"
+                    >
+                        Send verification code
+                    </button>
+                    <p class="auth-helper" id="verificationCodeStatus" aria-live="polite"></p>
+                </div>
+            </div>
+
+            <div class="auth-field auth-floating-field">
+                <div class="floating-control">
+                    {{ form.verification_code(
+                        class="auth-input auth-input-floating" ~ (" is-invalid" if form.verification_code.errors else ""),
+                        size=12,
+                        placeholder=" ",
+                        inputmode="numeric",
+                        autocomplete="one-time-code"
+                    ) }}
+                    <label for="{{ form.verification_code.id }}" class="floating-label">{{ form.verification_code.label.text }}</label>
+                </div>
+                {% for error in form.verification_code.errors %}
+                    <p class="auth-error">{{ error }}</p>
+                {% endfor %}
             </div>
 
             <div class="auth-field auth-floating-field">
@@ -91,4 +118,51 @@
         <p class="auth-switch">Already registered? <a href="{{ url_for('login') }}">Sign in</a></p>
     </section>
 </div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+    (function () {
+        const sendButton = document.getElementById("sendVerificationCodeBtn");
+        const statusEl = document.getElementById("verificationCodeStatus");
+        const emailInput = document.getElementById("{{ form.email.id }}");
+        const formEl = sendButton ? sendButton.closest("form") : null;
+
+        if (!sendButton || !statusEl || !emailInput || !formEl) return;
+
+        function setStatus(message, isError) {
+            statusEl.textContent = message;
+            statusEl.classList.toggle("auth-error", Boolean(isError));
+        }
+
+        sendButton.addEventListener("click", async function () {
+            const emailValue = emailInput.value.trim();
+            if (!emailValue) {
+                setStatus("Enter your email address first.", true);
+                return;
+            }
+
+            sendButton.disabled = true;
+            setStatus("Sending verification code...", false);
+
+            const formData = new FormData(formEl);
+            formData.set("email", emailValue);
+
+            try {
+                const response = await fetch(sendButton.dataset.endpoint, {
+                    method: "POST",
+                    body: formData,
+                    headers: { "X-Requested-With": "XMLHttpRequest" },
+                });
+                const payload = await response.json();
+                setStatus(payload.message || "Request failed.", !payload.ok);
+            } catch (_error) {
+                setStatus("Request failed. Try again.", true);
+            } finally {
+                sendButton.disabled = false;
+            }
+        });
+    })();
+</script>
 {% endblock %}

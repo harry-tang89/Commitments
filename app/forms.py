@@ -55,8 +55,9 @@ class LoginForm(FlaskForm):
 
 
 class RegistrationForm(FlaskForm):
-    username = StringField("Usernamer (optional)", validators=[Optional()])
-    email = StringField("Mobile number or email address", validators=[DataRequired()])
+    username = StringField("Username (optional)", validators=[Optional()])
+    email = StringField("Email address", validators=[DataRequired()])
+    verification_code = StringField("Email verification code", validators=[DataRequired()])
     birth_day = SelectField("Day", choices=[], validators=[Optional()])
     birth_month = SelectField("Month", choices=[], validators=[Optional()])
     birth_year = SelectField("Year", choices=[], validators=[Optional()])
@@ -83,16 +84,23 @@ class RegistrationForm(FlaskForm):
 
     def validate_email(self, email):
         value = email.data.strip()
-        if not EMAIL_REGEX.fullmatch(value) and not MOBILE_REGEX.fullmatch(value):
-            raise ValidationError("Enter a valid mobile number or email address.")
+        if not EMAIL_REGEX.fullmatch(value):
+            raise ValidationError("Enter a valid email address.")
 
-        normalized = value.lower() if "@" in value else value
+        normalized = value.lower()
         try:
             user_id = db.session.scalar(sa.select(User.id).where(User.email == normalized))
         except SQLAlchemyError:
             raise ValidationError("Database is not ready. Run migrations and try again.")
         if user_id is not None:
             raise ValidationError("Email already registered. Please use a different email address.")
+
+    def validate_verification_code(self, verification_code):
+        value = (verification_code.data or "").strip()
+        if not value:
+            raise ValidationError("Email verification code is required.")
+        if not value.isdigit() or len(value) != 6:
+            raise ValidationError("Enter the 6-digit email verification code.")
 
     def validate(self, extra_validators=None):
         is_valid = super().validate(extra_validators=extra_validators)

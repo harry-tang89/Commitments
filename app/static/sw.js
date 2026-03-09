@@ -1,4 +1,4 @@
-const CACHE_NAME = "ac-v5";
+const CACHE_NAME = "ac-v6";
 // Cache only non-sensitive static assets.
 const STATIC_ASSETS = [
   "/manifest.webmanifest",

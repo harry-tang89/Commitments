@@ -65,6 +65,7 @@
         <section class="section app-main">
             {% block content %}{% endblock %}
         </section>
+        {% block scripts %}
         <script>
             /**
             * registerServiceWorkerOnLoad
@@ -139,5 +140,6 @@
                 };
             })();
         </script>
+        {% endblock %}
     </body>
 </html>
