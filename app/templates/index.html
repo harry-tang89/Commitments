@@ -404,14 +404,27 @@
             const activeWithIndex = items
                 .map((item, idx) => ({ item, idx }))
                 .filter(({ item }) => String(item.status || "active").toLowerCase() !== "completed");
+            const compareOverdueNewestFirst = (left, right) => {
+                const leftDate = String(left.item.deadline_date || "").trim();
+                const rightDate = String(right.item.deadline_date || "").trim();
+                if (leftDate !== rightDate) return rightDate.localeCompare(leftDate);
+
+                const leftCreatedAt = String(left.item.created_at || "").trim();
+                const rightCreatedAt = String(right.item.created_at || "").trim();
+                if (leftCreatedAt !== rightCreatedAt) return rightCreatedAt.localeCompare(leftCreatedAt);
+
+                return right.idx - left.idx;
+            };
             const nonOverdueActiveWithIndex = activeWithIndex
                 .filter(({ item }) => !isPastIsoDate(String(item.deadline_date || "").trim()));
             const allOverdueActiveWithIndex = activeWithIndex
-                .filter(({ item }) => isPastIsoDate(String(item.deadline_date || "").trim()));
+                .filter(({ item }) => isPastIsoDate(String(item.deadline_date || "").trim()))
+                .sort(compareOverdueNewestFirst);
             const overdueActiveWithIndex = activeWithIndex
-                .filter(({ item }) => matchesOverdueFilter(String(item.deadline_date || "").trim()));
+                .filter(({ item }) => matchesOverdueFilter(String(item.deadline_date || "").trim()))
+                .sort(compareOverdueNewestFirst);
 
-            const renderActiveItem = ({ item, idx: sourceIndex }) => {
+            const renderActiveItem = ({ item, idx: sourceIndex }, options = {}) => {
                 const title = escapeHtml(item.title || "");
                 const description = escapeHtml(item.description || "");
                 const categoryValue = String(item.category || "").trim();
@@ -425,6 +438,7 @@
                 const canDelete = Boolean(item.can_delete);
                 const showViewMembers = isAuthenticated && isTeamCommitment && Number(item.id || 0) > 0;
                 const showExitTeam = isAuthenticated && isTeamCommitment && canEdit && !canDelete && Number(item.id || 0) > 0;
+                const sectionStartAttr = options.sectionStart ? ` data-overdue-section-start="1"` : "";
                 const moreMenuContent = `
                     <button type="button" class="more-menu-item more-menu-edit" data-edit-index="${sourceIndex}">Edit</button>
                     ${(isAuthenticated ? canDelete : true) ? `<button type="button" class="more-menu-item more-menu-delete" data-delete-index="${sourceIndex}">Delete</button>` : ""}
@@ -455,7 +469,7 @@
                             ` : ""}
                        </div>`;
                 return `
-                    <li class="quick-list-item ${openMoreIndex === sourceIndex ? "quick-list-item-menu-open" : ""}">
+                    <li class="quick-list-item ${openMoreIndex === sourceIndex ? "quick-list-item-menu-open" : ""}"${sectionStartAttr}>
                         <div class="quick-list-row" style="--progress:${progress}%;">
                             <div class="quick-list-progress-line" aria-hidden="true"></div>
                             <div class="quick-list-main">
@@ -474,9 +488,17 @@
             };
 
             const normalHtml = nonOverdueActiveWithIndex.map(renderActiveItem).join("");
-            const overdueHtml = overdueActiveWithIndex.map(renderActiveItem).join("");
+            const overdueHtml = overdueActiveWithIndex
+                .map((entry, overdueIndex) => renderActiveItem(entry, { sectionStart: overdueIndex === 0 }))
+                .join("");
             syncOverdueFilterUi(allOverdueActiveWithIndex.length > 0, overdueActiveWithIndex.length > 0);
             listEl.innerHTML = `${normalHtml}${overdueHtml}`;
+            const firstOverdueItemEl = listEl.querySelector("[data-overdue-section-start='1']");
+            if (firstOverdueItemEl instanceof HTMLElement) {
+                listEl.insertBefore(overdueFilterWrap, firstOverdueItemEl);
+            } else if (overdueFilterWrap.parentElement === listEl) {
+                overdueFilterWrap.remove();
+            }
         }
 
         if (!completedItems.length) {
@@ -719,7 +741,7 @@
         if (!(overdueFilterWrap instanceof HTMLElement)) return;
         overdueFilterWrap.classList.toggle("is-hidden", !hasAnyOverdueItems);
         overdueFilterCurrentLabel.textContent = overdueFilterLabel(overdueFilterValue);
-        overdueFilterCurrentLabel.classList.toggle("is-hidden", overdueFilterValue === "all");
+        overdueFilterCurrentLabel.classList.add("is-hidden");
         overdueFilterToggle.setAttribute("aria-expanded", overdueFilterMenuOpen ? "true" : "false");
         overdueFilterToggle.setAttribute("title", `Overdue filter: ${overdueFilterLabel(overdueFilterValue)}`);
         overdueFilterToggle.classList.toggle("is-open", overdueFilterMenuOpen);

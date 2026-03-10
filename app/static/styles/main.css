@@ -265,7 +265,7 @@ input.future-date-only[type="date"]::-webkit-datetime-edit-fields-wrapper {
 }
 
 .overdue-filter-wrap {
-    margin-top: 10px;
+    margin: 0;
     display: flex;
     align-items: center;
     justify-content: space-between;
