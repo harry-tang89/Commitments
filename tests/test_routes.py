@@ -54,7 +54,7 @@ def create_user_in_db(
 
 def login_as_user(
     http_client,
-    username: str = "testuser",
+    username: str = "test@example.com",
     plaintext_password: str = "password123",
 ):
     """
@@ -206,7 +206,7 @@ def test_login_with_wrong_password_shows_error_message(http_client):
     """
     GIVEN: A user exists in the database.
     WHEN:  They attempt to log in with an incorrect password.
-    THEN:  The response contains an "Invalid username or password" message.
+    THEN:  The response contains the current invalid-credentials message.
     """
     # Arrange: create a real user in the DB with a known correct password.
     create_user_in_db(
@@ -218,7 +218,7 @@ def test_login_with_wrong_password_shows_error_message(http_client):
     # Act: attempt login with the wrong password.
     login_response = http_client.post(
         "/login",
-        data={"username": "bob", "password": "wrong-password"},
+        data={"username": "bob@example.com", "password": "wrong-password"},
         follow_redirects=True,
     )
 
@@ -227,7 +227,7 @@ def test_login_with_wrong_password_shows_error_message(http_client):
     assert login_response.status_code == 200
 
     # response.data is bytes, so we compare against a bytes literal (b"...").
-    assert b"Invalid username or password" in login_response.data
+    assert b"Invalid mobile number/email or password." in login_response.data
 
 
 def test_forgot_password_flow_updates_password(http_client):
@@ -295,7 +295,7 @@ def test_forgot_password_flow_updates_password(http_client):
     login_with_new_password = http_client.post(
         "/login",
         data={
-            "username": "recoveruser",
+            "username": "recover@example.com",
             "password": "new-password-123",
         },
         follow_redirects=True,
@@ -325,6 +325,115 @@ def test_forgot_password_contact_step_does_not_disclose_account_existence(http_c
     assert b"We could not find an account with that mobile number or email address." not in response.data
 
 
+def test_account_page_requires_login(http_client):
+    response = http_client.get("/account", follow_redirects=False)
+
+    assert response.status_code == 302
+    assert "/login" in response.headers["Location"]
+
+
+def test_account_page_updates_email_for_current_user(http_client):
+    create_user_in_db(
+        username="accountuser",
+        email="old@example.com",
+        plaintext_password="password123",
+    )
+    login_as_user(http_client, username="old@example.com", plaintext_password="password123")
+
+    response = http_client.post(
+        "/account",
+        data={"email": "new@example.com"},
+        follow_redirects=True,
+    )
+
+    updated_user = db.session.scalar(
+        sa.select(User).where(User.username == "accountuser")
+    )
+
+    assert response.status_code == 200
+    assert b"Email updated." in response.data
+    assert b"new@example.com" in response.data
+    assert updated_user is not None
+    assert updated_user.email == "new@example.com"
+
+
+def test_settings_api_persists_user_preferences(http_client):
+    create_user_in_db(
+        username="settingsuser",
+        email="settings@example.com",
+        plaintext_password="password123",
+    )
+    login_as_user(http_client, username="settings@example.com", plaintext_password="password123")
+
+    update_response = http_client.patch(
+        "/api/settings",
+        json={
+            "default_deadline_today": True,
+            "auto_hide_completed": True,
+            "auto_delete_overdue": True,
+            "auto_delete_overdue_range": "yesterday",
+        },
+    )
+
+    refreshed_user = db.session.scalar(
+        sa.select(User).where(User.email == "settings@example.com")
+    )
+
+    assert update_response.status_code == 200
+    assert refreshed_user is not None
+    assert refreshed_user.setting_default_deadline_today is True
+    assert refreshed_user.setting_auto_hide_completed is True
+    assert refreshed_user.setting_auto_delete_overdue is True
+    assert refreshed_user.setting_auto_delete_overdue_range == "yesterday"
+
+    fetch_response = http_client.get("/api/settings")
+    fetched_payload = fetch_response.get_json()
+
+    assert fetch_response.status_code == 200
+    assert fetched_payload["settings"]["default_deadline_today"] is True
+    assert fetched_payload["settings"]["auto_hide_completed"] is True
+    assert fetched_payload["settings"]["auto_delete_overdue"] is True
+    assert fetched_payload["settings"]["auto_delete_overdue_range"] == "yesterday"
+
+
+def test_settings_api_requires_login(http_client):
+    response = http_client.get("/api/settings", follow_redirects=False)
+
+    assert response.status_code == 302
+    assert "/login" in response.headers["Location"]
+
+
+def test_commitment_events_stream_requires_login(http_client):
+    response = http_client.get("/api/commitments/events", follow_redirects=False)
+
+    assert response.status_code == 302
+    assert "/login" in response.headers["Location"]
+
+
+def test_quick_commitment_create_bumps_sync_version(http_client):
+    create_user_in_db()
+    login_as_user(http_client)
+
+    user_before = db.session.scalar(sa.select(User).where(User.email == "test@example.com"))
+    assert user_before is not None
+    assert user_before.commitments_sync_version == 0
+
+    response = http_client.post(
+        "/api/commitments/quick",
+        json={
+            "title": "Realtime item",
+            "description": "SSE version bump",
+            "deadline_date": (date.today() + timedelta(days=1)).isoformat(),
+        },
+    )
+
+    user_after = db.session.scalar(sa.select(User).where(User.email == "test@example.com"))
+
+    assert response.status_code == 201
+    assert user_after is not None
+    assert user_after.commitments_sync_version == 1
+
+
 def test_post_commitment_creates_commitment_row(http_client):
     """
     GIVEN: A logged-in user.
@@ -338,7 +447,7 @@ def test_post_commitment_creates_commitment_row(http_client):
 
     # This creates a date 7 days from today, formatted as YYYY-MM-DD,
     # which is a common HTML date input format.
-    target_date_iso = (date.today() + timedelta(days=7)).isoformat()
+    deadline_date_iso = (date.today() + timedelta(days=7)).isoformat()
 
     # Act: submit a new commitment.
     create_response = http_client.post(
@@ -347,7 +456,7 @@ def test_post_commitment_creates_commitment_row(http_client):
             # Intentionally include extra whitespace to test that the app trims input.
             "title": "  Finish sprint work  ",
             "description": "  Update backend tests  ",
-            "target_date": target_date_iso,
+            "deadline_date": deadline_date_iso,
         },
         follow_redirects=True,
     )
@@ -392,7 +501,7 @@ def test_quick_commitment_api_returns_401_when_logged_out(http_client):
         json={
             "title": "Cache-only goal",
             "description": "Not logged in",
-            "target_date": (date.today() + timedelta(days=1)).isoformat(),
+            "deadline_date": (date.today() + timedelta(days=1)).isoformat(),
         },
     )
 
@@ -413,13 +522,13 @@ def test_quick_commitment_api_creates_row_when_logged_in(http_client):
     login_as_user(http_client)
 
     # Act: create a commitment through JSON API.
-    target_date_iso = (date.today() + timedelta(days=5)).isoformat()
+    deadline_date_iso = (date.today() + timedelta(days=5)).isoformat()
     response = http_client.post(
         "/api/commitments/quick",
         json={
             "title": "Quick API Commitment",
             "description": "Saved in DB",
-            "target_date": target_date_iso,
+            "deadline_date": deadline_date_iso,
         },
     )
 
@@ -450,7 +559,7 @@ def test_sync_local_commitments_creates_only_non_duplicate_titles(http_client):
         user_id=user.id,
         title="Existing Title",
         description="Already there",
-        target_date=date.today() + timedelta(days=1),
+        deadline_date=date.today() + timedelta(days=1),
         status="active",
     )
     db.session.add(existing)
@@ -464,12 +573,12 @@ def test_sync_local_commitments_creates_only_non_duplicate_titles(http_client):
                 {
                     "title": "Existing Title",
                     "description": "Should be skipped",
-                    "target_date": (date.today() + timedelta(days=2)).isoformat(),
+                    "deadline_date": (date.today() + timedelta(days=2)).isoformat(),
                 },
                 {
                     "title": "New Local Goal",
                     "description": "Should be created",
-                    "target_date": (date.today() + timedelta(days=3)).isoformat(),
+                    "deadline_date": (date.today() + timedelta(days=3)).isoformat(),
                 },
             ]
         },
@@ -504,3 +613,29 @@ def test_sync_local_commitments_requires_login(http_client):
     )
 
     assert response.status_code == 401
+
+
+def test_home_commitments_data_returns_latest_user_commitments(http_client):
+    user = create_user_in_db()
+    login_as_user(http_client)
+
+    db.session.add(
+        Commitment(
+            user_id=user.id,
+            title="Latest synced item",
+            description="Created in DB",
+            deadline_date=date.today() + timedelta(days=2),
+            status="completed",
+        )
+    )
+    db.session.commit()
+
+    response = http_client.get("/api/commitments/home-data")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload is not None
+    assert payload["ok"] is True
+    assert len(payload["commitments"]) == 1
+    assert payload["commitments"][0]["title"] == "Latest synced item"
+    assert payload["commitments"][0]["status"] == "completed"

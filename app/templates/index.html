@@ -64,9 +64,6 @@
 
             <div class="quick-actions">
                 <button type="submit" class="action-btn">Create Commitment</button>
-                {% if current_user.is_authenticated %}
-                <a href="{{ url_for('commitments') }}" class="action-btn action-btn-secondary">View All</a>
-                {% endif %}
             </div>
         </form>
 
@@ -171,17 +168,35 @@
 <script>
 (() => {
     const isAuthenticated = {{ 'true' if current_user.is_authenticated else 'false' }};
+    window.commitmentsCurrentSettings = {{ ({
+        "default_deadline_today": current_user.setting_default_deadline_today,
+        "auto_hide_completed": current_user.setting_auto_hide_completed,
+        "auto_delete_overdue": current_user.setting_auto_delete_overdue,
+        "auto_delete_overdue_range": current_user.setting_auto_delete_overdue_range
+    } if current_user.is_authenticated else none)|tojson }};
     const enableCompleteFireworks = false;
     const initialDbCommitments = {{ (initial_commitments or [])|tojson }};
     const categoryChoices = {{ (quick_categories or [])|tojson }};
     const categoryLabelByValue = new Map(categoryChoices.map(([value, label]) => [value, label]));
     const storageKey = "guest_commitments_v1";
+    const defaultDeadlineKey = "setting_default_deadline_today_v1";
     const autoHideCompletedKey = "setting_auto_hide_completed_v1";
+    const autoDeleteOverdueKey = "setting_auto_delete_overdue_v1";
+    const autoDeleteOverdueRangeKey = "setting_auto_delete_overdue_range_v1";
     const completionStampStorageKey = "completed_commitment_stamps_v1";
     const completedVisibleCountWhenCollapsed = 3;
+    const fallbackRemoteSyncIntervalMs = 60000;
+    const remoteSyncPauseAfterInteractionMs = 12000;
     const maxItems = 20;
     let dbCommitments = Array.isArray(initialDbCommitments) ? [...initialDbCommitments] : [];
     let completedListExpanded = false;
+    let remoteSyncTimerId = null;
+    let remoteSyncInFlight = false;
+    let remoteSyncPausedUntil = 0;
+    let commitmentsEventSource = null;
+    let commitmentsEventRetryTimerId = null;
+    let pendingRefreshRequest = null;
+    let pendingRefreshTimerId = null;
 
     const form = document.getElementById("quickCommitmentForm");
     const statusEl = document.getElementById("quickStatus");
@@ -238,6 +253,22 @@
     let priorityUid = 0;
     let overdueFilterValue = "all";
     let overdueFilterMenuOpen = false;
+
+    function normalizeAutoDeleteRange(value) {
+        return value === "all" ? "all" : "yesterday";
+    }
+
+    function currentSettings() {
+        if (isAuthenticated && window.commitmentsCurrentSettings) {
+            return window.commitmentsCurrentSettings;
+        }
+        return {
+            default_deadline_today: localStorage.getItem(defaultDeadlineKey) === "1",
+            auto_hide_completed: localStorage.getItem(autoHideCompletedKey) === "1",
+            auto_delete_overdue: localStorage.getItem(autoDeleteOverdueKey) === "1",
+            auto_delete_overdue_range: normalizeAutoDeleteRange(localStorage.getItem(autoDeleteOverdueRangeKey)),
+        };
+    }
 
     function currentYearStartIsoDate() {
         const year = new Date().getFullYear();
@@ -519,7 +550,7 @@
             if (rightMs !== leftMs) return rightMs - leftMs;
             return right.idx - left.idx;
         });
-        const autoHideCompletedEnabled = localStorage.getItem(autoHideCompletedKey) === "1";
+        const autoHideCompletedEnabled = Boolean(currentSettings().auto_hide_completed);
         const canCollapseCompleted = autoHideCompletedEnabled && completedWithIndex.length > completedVisibleCountWhenCollapsed;
         const shouldCollapseCompleted = canCollapseCompleted && !completedListExpanded;
 
@@ -674,6 +705,214 @@
         writeGuestCommitments(nextItems);
     }
 
+    function normalizeCommitmentForClient(item) {
+        return {
+            ...item,
+            id: Number(item.id || 0),
+            category: String(item.category || "").trim(),
+            title: String(item.title || "").trim(),
+            description: String(item.description || "").trim(),
+            deadline_date: String(item.deadline_date || "").trim(),
+            created_at: String(item.created_at || "").trim() || new Date().toISOString(),
+            status: String(item.status || "active").toLowerCase(),
+            member_count: Number(item.member_count || 1),
+            can_edit: Boolean(item.can_edit),
+            can_delete: Boolean(item.can_delete),
+        };
+    }
+
+    function replaceCommitmentInDbState(nextItem) {
+        const normalizedItem = normalizeCommitmentForClient(nextItem);
+        const existingIndex = dbCommitments.findIndex((item) => Number(item.id) === normalizedItem.id);
+        if (existingIndex >= 0) {
+            dbCommitments[existingIndex] = normalizedItem;
+            return;
+        }
+        dbCommitments.unshift(normalizedItem);
+    }
+
+    function commitmentSignature(items) {
+        return JSON.stringify(
+            (Array.isArray(items) ? items : []).map((item) => ({
+                id: Number(item.id || 0),
+                status: String(item.status || "").toLowerCase(),
+                deadline_date: String(item.deadline_date || ""),
+                title: String(item.title || ""),
+                description: String(item.description || ""),
+                category: String(item.category || ""),
+                member_count: Number(item.member_count || 0),
+                can_edit: Boolean(item.can_edit),
+                can_delete: Boolean(item.can_delete),
+            }))
+        );
+    }
+
+    function pauseRemoteSync() {
+        remoteSyncPausedUntil = Date.now() + remoteSyncPauseAfterInteractionMs;
+    }
+
+    function clearPendingRefreshTimer() {
+        if (pendingRefreshTimerId !== null) {
+            window.clearTimeout(pendingRefreshTimerId);
+            pendingRefreshTimerId = null;
+        }
+    }
+
+    function schedulePendingRefresh(delayMs = 0) {
+        clearPendingRefreshTimer();
+        pendingRefreshTimerId = window.setTimeout(async () => {
+            pendingRefreshTimerId = null;
+            if (!pendingRefreshRequest) return;
+            const queued = pendingRefreshRequest;
+            const refreshed = await refreshCommitmentsFromServer(queued);
+            if (refreshed) {
+                pendingRefreshRequest = null;
+                return;
+            }
+
+            if (document.hidden) {
+                schedulePendingRefresh(1000);
+                return;
+            }
+
+            const remainingPauseMs = Math.max(0, remoteSyncPausedUntil - Date.now());
+            if (remainingPauseMs > 0 || hasBlockingUiOpen() || remoteSyncInFlight) {
+                schedulePendingRefresh(Math.max(remainingPauseMs, 1000));
+            }
+        }, delayMs);
+    }
+
+    function requestCommitmentsRefresh(options = {}) {
+        const nextOptions = { silent: options.silent !== false };
+        pendingRefreshRequest = pendingRefreshRequest
+            ? { silent: pendingRefreshRequest.silent && nextOptions.silent }
+            : nextOptions;
+
+        if (document.hidden) {
+            return;
+        }
+
+        const remainingPauseMs = Math.max(0, remoteSyncPausedUntil - Date.now());
+        if (remainingPauseMs > 0 || hasBlockingUiOpen() || remoteSyncInFlight) {
+            schedulePendingRefresh(Math.max(remainingPauseMs, 1000));
+            return;
+        }
+
+        schedulePendingRefresh(0);
+    }
+
+    function hasBlockingUiOpen() {
+        const activeElement = document.activeElement;
+        const activeTag = activeElement?.tagName?.toLowerCase() || "";
+        return (
+            openMoreIndex !== null
+            || !editModal.classList.contains("is-hidden")
+            || !memberModal.classList.contains("is-hidden")
+            || !viewMembersModal.classList.contains("is-hidden")
+            || !priorityCompareModal.classList.contains("is-hidden")
+            || overdueFilterMenuOpen
+            || activeTag === "input"
+            || activeTag === "textarea"
+            || activeTag === "select"
+        );
+    }
+
+    async function refreshCommitmentsFromServer(options = {}) {
+        if (!isAuthenticated || remoteSyncInFlight) return false;
+        if (Date.now() < remoteSyncPausedUntil) return false;
+        if (hasBlockingUiOpen()) return false;
+        remoteSyncInFlight = true;
+        try {
+            const response = await fetch("{{ url_for('home_commitments_data') }}", {
+                headers: { "Accept": "application/json" },
+                cache: "no-store",
+            });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok || !Array.isArray(result.commitments)) {
+                return false;
+            }
+
+            const nextCommitments = result.commitments;
+            if (commitmentSignature(dbCommitments) === commitmentSignature(nextCommitments)) {
+                return false;
+            }
+
+            dbCommitments = nextCommitments.map(normalizeCommitmentForClient);
+            openMoreIndex = null;
+            renderList();
+            if (!options.silent) {
+                setStatus("Commitments updated from another device.");
+            }
+            return true;
+        } catch (_error) {
+            return false;
+        } finally {
+            remoteSyncInFlight = false;
+        }
+    }
+
+    function scheduleRemoteSync() {
+        if (!isAuthenticated || remoteSyncTimerId !== null) return;
+        remoteSyncTimerId = window.setInterval(() => {
+            if (document.hidden) return;
+            requestCommitmentsRefresh({ silent: true });
+        }, fallbackRemoteSyncIntervalMs);
+    }
+
+    function closeCommitmentsEventStream() {
+        if (commitmentsEventRetryTimerId !== null) {
+            window.clearTimeout(commitmentsEventRetryTimerId);
+            commitmentsEventRetryTimerId = null;
+        }
+        if (commitmentsEventSource) {
+            commitmentsEventSource.close();
+            commitmentsEventSource = null;
+        }
+    }
+
+    function scheduleCommitmentsEventReconnect(delayMs = 2000) {
+        if (!isAuthenticated) return;
+        if (commitmentsEventRetryTimerId !== null) return;
+        commitmentsEventRetryTimerId = window.setTimeout(() => {
+            commitmentsEventRetryTimerId = null;
+            startCommitmentsEventStream();
+        }, delayMs);
+    }
+
+    function startCommitmentsEventStream() {
+        if (!isAuthenticated || typeof window.EventSource !== "function") {
+            scheduleRemoteSync();
+            return;
+        }
+        if (commitmentsEventSource) return;
+
+        try {
+            commitmentsEventSource = new EventSource("{{ url_for('commitment_events_stream') }}");
+        } catch (_error) {
+            scheduleRemoteSync();
+            scheduleCommitmentsEventReconnect(5000);
+            return;
+        }
+
+        commitmentsEventSource.addEventListener("open", () => {
+            if (remoteSyncTimerId !== null) {
+                window.clearInterval(remoteSyncTimerId);
+                remoteSyncTimerId = null;
+            }
+        });
+
+        commitmentsEventSource.addEventListener("commitments-updated", () => {
+            if (document.hidden) return;
+            requestCommitmentsRefresh({ silent: true });
+        });
+
+        commitmentsEventSource.onerror = () => {
+            closeCommitmentsEventStream();
+            scheduleRemoteSync();
+            scheduleCommitmentsEventReconnect(5000);
+        };
+    }
+
     function closeMoreMenu(shouldRender = true) {
         if (openMoreIndex === null) return;
         openMoreIndex = null;
@@ -751,6 +990,61 @@
 
     function isActiveCommitment(item) {
         return String(item.status || "active").toLowerCase() !== "completed";
+    }
+
+    function autoDeleteOverdueEnabled() {
+        return Boolean(currentSettings().auto_delete_overdue);
+    }
+
+    function matchesAutoDeleteOverdueRange(dateStr) {
+        const normalizedDate = String(dateStr || "").trim();
+        if (!isPastIsoDate(normalizedDate)) return false;
+        const range = normalizeAutoDeleteRange(currentSettings().auto_delete_overdue_range);
+        if (range === "yesterday") {
+            return normalizedDate === isoDateOffsetFromToday(1);
+        }
+        return true;
+    }
+
+    async function autoDeleteOverdueCommitmentsIfEnabled() {
+        if (!autoDeleteOverdueEnabled()) return { deletedCount: 0, source: "" };
+
+        if (isAuthenticated) {
+            const overdueOwnedItems = dbCommitments.filter((item) => (
+                isActiveCommitment(item)
+                && matchesAutoDeleteOverdueRange(String(item.deadline_date || "").trim())
+                && Boolean(item.can_delete)
+                && Number(item.id) > 0
+            ));
+            if (!overdueOwnedItems.length) return { deletedCount: 0, source: "" };
+
+            let deletedCount = 0;
+            const deletedIds = new Set();
+            for (const item of overdueOwnedItems) {
+                try {
+                    const response = await fetch(`/api/commitments/${item.id}/quick`, { method: "DELETE" });
+                    if (!response.ok) continue;
+                    clearCompletionStamp(item.id);
+                    deletedCount += 1;
+                    deletedIds.add(Number(item.id));
+                } catch (_error) {
+                    // Ignore individual failures and keep the remaining list intact.
+                }
+            }
+
+            if (!deletedCount) return { deletedCount: 0, source: "" };
+            dbCommitments = dbCommitments.filter((item) => !deletedIds.has(Number(item.id)));
+            return { deletedCount, source: "database" };
+        }
+
+        const guestItems = readGuestCommitments();
+        const nextGuestItems = guestItems.filter((item) => !(
+            isActiveCommitment(item) && matchesAutoDeleteOverdueRange(String(item.deadline_date || "").trim())
+        ));
+        const deletedCount = guestItems.length - nextGuestItems.length;
+        if (!deletedCount) return { deletedCount: 0, source: "" };
+        writeGuestCommitments(nextGuestItems);
+        return { deletedCount, source: "browser cache" };
     }
 
     function resetPriorityCompareState() {
@@ -989,7 +1283,7 @@
             return { ok: false, message: result.message || "Failed to complete commitment." };
         }
         item.status = String(result.commitment?.status || "completed");
-        return { ok: true };
+        return { ok: true, commitment: result.commitment || null };
     }
 
     async function recoverCommitment(item) {
@@ -1011,7 +1305,7 @@
         }
         item.status = String(result.commitment?.status || "active");
         clearCompletionStamp(item.id);
-        return { ok: true };
+        return { ok: true, commitment: result.commitment || null };
     }
 
     async function createNewCommitmentFromCompleted(index) {
@@ -1192,13 +1486,21 @@
 
     async function syncGuestCommitmentsIfLoggedIn() {
         if (!isAuthenticated) {
+            const autoDeleteResult = await autoDeleteOverdueCommitmentsIfEnabled();
             renderList();
+            if (autoDeleteResult.deletedCount > 0) {
+                setStatus(`Auto-deleted ${autoDeleteResult.deletedCount} overdue commitment(s) from ${autoDeleteResult.source}.`);
+            }
             return;
         }
 
         const guestItems = readGuestCommitments();
         if (!guestItems.length) {
+            const autoDeleteResult = await autoDeleteOverdueCommitmentsIfEnabled();
             renderList();
+            if (autoDeleteResult.deletedCount > 0) {
+                setStatus(`Auto-deleted ${autoDeleteResult.deletedCount} overdue commitment(s) from ${autoDeleteResult.source}.`);
+            }
             return;
         }
 
@@ -1223,39 +1525,38 @@
             for (const item of createdItems) {
                 const id = Number(item.id);
                 if (!Number.isInteger(id) || existingIds.has(id)) continue;
-                dbCommitments.unshift({
-                    id,
-                    category: String(item.category || "").trim(),
-                    title: String(item.title || "").trim(),
-                    description: String(item.description || "").trim(),
-                    deadline_date: String(item.deadline_date || "").trim(),
-                    created_at: String(item.created_at || "").trim() || new Date().toISOString(),
-                    status: String(item.status || "active").trim().toLowerCase() || "active",
-                    member_count: Number(item.member_count || 1),
-                    can_edit: Boolean(item.can_edit),
-                    can_delete: Boolean(item.can_delete),
-                });
+                dbCommitments.unshift(normalizeCommitmentForClient(item));
                 existingIds.add(id);
             }
 
             writeGuestCommitments([]);
+            const autoDeleteResult = await autoDeleteOverdueCommitmentsIfEnabled();
             renderList();
             const created = Number(result.created || 0);
             const duplicates = Number(result.skipped_duplicates || 0);
             const invalid = Number(result.skipped_invalid || 0);
             const pieces = [];
             pieces.push(`Auto-synced ${created} commitment(s) to your account.`);
+            if (autoDeleteResult.deletedCount > 0) {
+                pieces.push(`Auto-deleted ${autoDeleteResult.deletedCount} overdue commitment(s) from ${autoDeleteResult.source}.`);
+            }
             if (duplicates > 0) pieces.push(`${duplicates} duplicate title(s) skipped.`);
             if (invalid > 0) pieces.push(`${invalid} invalid item(s) skipped.`);
             setStatus(pieces.join(" "));
         } catch (_error) {
+            const autoDeleteResult = await autoDeleteOverdueCommitmentsIfEnabled();
             renderList();
+            if (autoDeleteResult.deletedCount > 0) {
+                setStatus(`Auto-sync failed due to network error. Auto-deleted ${autoDeleteResult.deletedCount} overdue commitment(s) from ${autoDeleteResult.source}.`, true);
+                return;
+            }
             setStatus("Auto-sync failed due to network error.", true);
         }
     }
 
     form.addEventListener("submit", async (event) => {
         event.preventDefault();
+        pauseRemoteSync();
         const formData = new FormData(form);
         const payload = {
             category: String(formData.get("category") || "").trim(),
@@ -1299,18 +1600,7 @@
 
             if (result.commitment) {
                 openMoreIndex = null;
-                dbCommitments.unshift({
-                    id: result.commitment.id,
-                    category: result.commitment.category || "",
-                    title: result.commitment.title,
-                    description: result.commitment.description || "",
-                    deadline_date: result.commitment.deadline_date,
-                    created_at: result.commitment.created_at || new Date().toISOString(),
-                    status: String(result.commitment.status || "active").toLowerCase(),
-                    member_count: Number(result.commitment.member_count || 1),
-                    can_edit: Boolean(result.commitment.can_edit),
-                    can_delete: Boolean(result.commitment.can_delete),
-                });
+                replaceCommitmentInDbState(result.commitment);
                 renderList();
             }
             form.reset();
@@ -1326,6 +1616,7 @@
     listEl.addEventListener("click", async (event) => {
         const target = event.target;
         if (!(target instanceof HTMLElement)) return;
+        pauseRemoteSync();
         const moreToggle = target.closest(".more-toggle");
         if (moreToggle instanceof HTMLElement) {
             const index = readTargetInt(moreToggle, "data-more-index");
@@ -1442,6 +1733,8 @@
                         }
                         renderList();
                         setStatus(result.message || "Failed to complete commitment.", true);
+                    } else if (result.commitment) {
+                        replaceCommitmentInDbState(result.commitment);
                     }
                 }
             } catch (_error) {
@@ -1495,6 +1788,7 @@
     });
 
     overdueFilterToggle.addEventListener("click", () => {
+        pauseRemoteSync();
         if (overdueFilterWrap.classList.contains("is-hidden")) return;
         overdueFilterMenuOpen = !overdueFilterMenuOpen;
         syncOverdueFilterUi(true, true);
@@ -1503,6 +1797,7 @@
     overdueFilterMenu.addEventListener("click", (event) => {
         const target = event.target;
         if (!(target instanceof HTMLElement)) return;
+        pauseRemoteSync();
         const option = target.closest("[data-overdue-filter]");
         if (!(option instanceof HTMLElement)) return;
         const nextValue = String(option.getAttribute("data-overdue-filter") || "").trim();
@@ -1515,6 +1810,7 @@
     completedListEl.addEventListener("click", async (event) => {
         const target = event.target;
         if (!(target instanceof HTMLElement)) return;
+        pauseRemoteSync();
         const collapseToggle = target.closest("[data-completed-collapse-toggle='1']");
         if (collapseToggle instanceof HTMLElement) {
             completedListExpanded = !completedListExpanded;
@@ -1552,6 +1848,9 @@
                 if (!result.ok) {
                     setStatus(result.message || "Failed to recover commitment.", true);
                     return;
+                }
+                if (isAuthenticated && result.commitment) {
+                    replaceCommitmentInDbState(result.commitment);
                 }
                 if (!isAuthenticated) {
                     setCurrentItems(items);
@@ -1616,6 +1915,7 @@
 
     editForm.addEventListener("submit", async (event) => {
         event.preventDefault();
+        pauseRemoteSync();
         if (editingIndex === null) return;
         clearEditErrors();
 
@@ -1665,18 +1965,14 @@
                 }
 
                 const updated = result.commitment || {};
-                dbCommitments[editingIndex] = {
-                    id: Number(updated.id || item.id),
-                    category: String(updated.category || category),
-                    title: String(updated.title || title),
-                    description: String(updated.description || description),
-                    deadline_date: String(updated.deadline_date || deadlineDate),
-                    created_at: String(updated.created_at || item.created_at || new Date().toISOString()),
-                    status: String(updated.status || item.status || "active").toLowerCase(),
-                    member_count: Number(updated.member_count || item.member_count || 1),
-                    can_edit: Boolean(updated.can_edit ?? item.can_edit),
-                    can_delete: Boolean(updated.can_delete ?? item.can_delete),
-                };
+                dbCommitments[editingIndex] = normalizeCommitmentForClient({
+                    ...item,
+                    category,
+                    title,
+                    description,
+                    deadline_date: deadlineDate,
+                    ...updated,
+                });
                 renderList();
                 closeEditModal();
                 setStatus("Commitment updated.");
@@ -1739,8 +2035,22 @@
         }
     });
 
+    document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) {
+            startCommitmentsEventStream();
+            requestCommitmentsRefresh({ silent: true });
+        } else if (commitmentsEventSource) {
+            closeCommitmentsEventStream();
+        }
+    });
+
+    window.addEventListener("beforeunload", () => {
+        closeCommitmentsEventStream();
+    });
+
     memberForm.addEventListener("submit", async (event) => {
         event.preventDefault();
+        pauseRemoteSync();
         if (!Number.isInteger(managingMemberId)) return;
         const contact = memberContactEl.value.trim();
         if (!contact) {
@@ -1812,6 +2122,8 @@
     prioritySlotLeft.addEventListener("click", swapPrioritySlots);
     prioritySlotRight.addEventListener("click", swapPrioritySlots);
 
+    startCommitmentsEventStream();
+    scheduleRemoteSync();
     syncGuestCommitmentsIfLoggedIn();
 })();
 </script>

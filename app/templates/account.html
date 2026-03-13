@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="account-shell">
+    <section class="account-page-card">
+        <div class="account-hero">
+            <div class="account-avatar" aria-hidden="true">{{ (current_user.username or current_user.email)[0]|upper }}</div>
+            <div class="account-hero-copy">
+                <h1 class="account-page-title">Account</h1>
+                <p class="account-page-subtitle">Review your sign-in details and keep your primary email address up to date.</p>
+            </div>
+        </div>
+
+        <div class="account-panel">
+            <div class="account-panel-header">
+                <div>
+                    <h2 class="account-panel-title">Email Address</h2>
+                    <p class="account-panel-help">This is the email you use to sign in to Commitments.</p>
+                </div>
+                <button
+                    type="button"
+                    class="account-edit-link"
+                    data-account-modal-open
+                    aria-haspopup="dialog"
+                    aria-controls="account-email-modal"
+                >
+                    Edit
+                </button>
+            </div>
+
+            <div class="account-email-row">
+                <div class="account-email-icon" aria-hidden="true">@</div>
+                <div class="account-email-copy">
+                    <p class="account-email-value">{{ current_user.email }}</p>
+                    <p class="account-email-meta">Primary email address</p>
+                </div>
+            </div>
+        </div>
+
+        <a class="action-btn action-btn-secondary settings-back-link" href="{{ url_for('index') }}">Back to Home</a>
+    </section>
+</div>
+
+<div
+    class="account-modal{% if show_email_editor %} is-visible{% endif %}"
+    id="account-email-modal"
+    data-account-modal
+    {% if not show_email_editor %}hidden{% endif %}
+>
+    <div class="account-modal-backdrop" data-account-modal-close></div>
+    <section class="account-modal-panel" role="dialog" aria-modal="true" aria-labelledby="account-email-modal-title">
+        <button type="button" class="account-modal-close" data-account-modal-close aria-label="Close">×</button>
+        <p class="account-modal-mark">Account</p>
+        <h2 class="account-modal-title" id="account-email-modal-title">Email Address</h2>
+        <p class="account-modal-copy">
+            Keep your primary email current so you can continue signing in and recovering your account smoothly.
+        </p>
+
+        <form method="post" novalidate class="account-form">
+            {{ form.hidden_tag() }}
+            <div class="auth-field auth-floating-field">
+                <div class="floating-wrap">
+                    {{ form.email(
+                        class="auth-input auth-input-floating" ~ (" is-invalid" if form.email.errors else ""),
+                        placeholder=" ",
+                        autocomplete="email"
+                    ) }}
+                    <label for="{{ form.email.id }}" class="floating-label">{{ form.email.label.text }}</label>
+                </div>
+                {% for error in form.email.errors %}
+                    <p class="auth-error">{{ error }}</p>
+                {% endfor %}
+            </div>
+
+            <div class="account-form-actions">
+                <button type="button" class="action-btn action-btn-secondary edit-cancel-btn" data-account-modal-close>Cancel</button>
+                {{ form.submit(class="action-btn") }}
+            </div>
+        </form>
+    </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+(() => {
+    const modal = document.querySelector("[data-account-modal]");
+    if (!modal) return;
+
+    const openButtons = document.querySelectorAll("[data-account-modal-open]");
+    const closeButtons = document.querySelectorAll("[data-account-modal-close]");
+    const input = modal.querySelector("input[name='email']");
+
+    function openModal() {
+        modal.hidden = false;
+        modal.classList.add("is-visible");
+        document.body.classList.add("modal-open");
+        window.setTimeout(() => {
+            if (input) input.focus();
+        }, 30);
+    }
+
+    function closeModal() {
+        modal.classList.remove("is-visible");
+        modal.hidden = true;
+        document.body.classList.remove("modal-open");
+    }
+
+    openButtons.forEach((button) => {
+        button.addEventListener("click", openModal);
+    });
+
+    closeButtons.forEach((button) => {
+        button.addEventListener("click", closeModal);
+    });
+
+    document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && modal.classList.contains("is-visible")) {
+            closeModal();
+        }
+    });
+
+    if (modal.classList.contains("is-visible")) {
+        document.body.classList.add("modal-open");
+        if (input) input.focus();
+    }
+})();
+</script>
+{% endblock %}

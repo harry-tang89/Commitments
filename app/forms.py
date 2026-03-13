@@ -1,5 +1,4 @@
 import sqlalchemy as sa
-import re
 from datetime import datetime, date
 from flask_wtf import FlaskForm
 from wtforms import (
@@ -21,12 +20,8 @@ from wtforms.validators import (
 from sqlalchemy.exc import SQLAlchemyError
 
 from app import db
+from app.constants import EMAIL_REGEX
 from app.models import User
-
-
-# Keep contact validation rules in one place so routes/forms stay consistent.
-EMAIL_REGEX = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-MOBILE_REGEX = re.compile(r"^\+?[0-9][0-9\-\s]{6,19}$")
 
 
 def _build_birth_choices() -> tuple[list[tuple[str, str]], list[tuple[str, str]], list[tuple[str, str]]]:
@@ -133,6 +128,33 @@ class ForgotPasswordForm(FlaskForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         _populate_birth_choice_fields(self)
+
+
+class AccountEmailForm(FlaskForm):
+    email = StringField("Email address", validators=[DataRequired()])
+    submit = SubmitField("Save")
+
+    def __init__(self, original_email: str, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.original_email = (original_email or "").strip().lower()
+
+    def validate_email(self, email):
+        value = (email.data or "").strip()
+        if not EMAIL_REGEX.fullmatch(value):
+            raise ValidationError("Enter a valid email address.")
+
+        normalized = value.lower()
+        if normalized == self.original_email:
+            email.data = normalized
+            return
+
+        try:
+            user_id = db.session.scalar(sa.select(User.id).where(User.email == normalized))
+        except SQLAlchemyError:
+            raise ValidationError("Database is not ready. Try again.")
+        if user_id is not None:
+            raise ValidationError("Email already registered. Please use a different email address.")
+        email.data = normalized
 
 
 class CommitmentForm(FlaskForm):

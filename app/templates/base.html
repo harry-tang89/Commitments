@@ -20,7 +20,7 @@
       <link rel="manifest" href="{{ url_for('web_manifest') }}">
 
       <!-- iOS home-screen icon -->
-      <link rel="apple-touch-icon" href="{{ url_for('static', filename='icons/icon-192.png') }}">
+      <link rel="apple-touch-icon" href="{{ url_for('static', filename='icons/icon-192-1.png') }}">
       
       <!-- Bulma CSS (local copy for offline use) -->
       <link rel="stylesheet" href="{{ url_for('static', filename='vendor/bulma.min.css') }}">
@@ -42,10 +42,11 @@
 
             <div class="top-right-links">
                 <a class="top-link" href="{{ url_for('settings') }}">Settings</a>
-                {% if current_user.is_anonymous %}
-                <a class="top-link" href="{{ url_for('login') }}">Login</a>
-                {% else %}
+                {% if current_user.is_authenticated %}
+                <a class="top-link" href="{{ url_for('account') }}">Account</a>
                 <a class="top-link" href="{{ url_for('logout') }}">Logout</a>
+                {% else %}
+                <a class="top-link" href="{{ url_for('login') }}">Login</a>
                 {% endif %}
             </div>
         </nav>
@@ -117,6 +118,12 @@
                 }
 
                 function defaultDeadlineEnabled() {
+                    if (
+                        window.commitmentsCurrentSettings
+                        && typeof window.commitmentsCurrentSettings.default_deadline_today === "boolean"
+                    ) {
+                        return window.commitmentsCurrentSettings.default_deadline_today;
+                    }
                     return localStorage.getItem(settingsStorageKey) === "1";
                 }
 

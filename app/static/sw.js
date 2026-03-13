@@ -1,11 +1,11 @@
-const CACHE_NAME = "ac-v6";
+const CACHE_NAME = "ac-v7";
 // Cache only non-sensitive static assets.
 const STATIC_ASSETS = [
   "/manifest.webmanifest",
   "/static/manifest.webmanifest",
   "/static/styles/main.css",
-  "/static/icons/icon-192.png",
-  "/static/icons/icon-512.png"
+  "/static/icons/icon-192-1.png",
+  "/static/icons/icon-512-1.png"
 ];
 
 self.addEventListener("install", (event) => {

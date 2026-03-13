@@ -9,55 +9,9 @@
     <h2 class="title" id="owned-by-me">Owned by Me</h2>
     <div class="fixed-grid has-3-cols">
         <div class="grid">
-            {% for commitment in commitments %}
-            {% set progress = commitment_progress.get(commitment.id, 0) %}
-            <div class="card cell">
-                <div class="card-header">
-                    <div class="card-header-title">
-                        {{ commitment.title }}
-                    </div>
-                </div>
-                <div class="card-content">
-                    <div class="commitment-description">
-                        <p>{{ commitment.description if commitment.description else '-' }}</p>
-                    </div>
-                    <div class="commitment-details">
-                        <div class="detail-item">
-                            <p><b>Deadline Date:</b> {{ commitment.deadline_date.strftime('%m/%d/%Y') }}</p>
-                            <p><b>Status:</b> {{ commitment.status|capitalize }}</p>
-                        </div>
-                        <div class="detail-item">
-                            <span class="progress-wrap">
-                                    <span class="progress-pie" style="--p: {{ progress }};" title="Time progress: {{ progress }}%"></span>
-                                    <span class="progress-text">{{ progress }}%</span>
-                            </span>
-                        </div>
-                    </div>
-                </div>
-                <footer class="card-footer">
-                    <form class="control footer-item" action="{{ url_for('edit_commitment', commitment_id=commitment.id) }}" method="get">
-                            <button type="submit" class="button is-ghost">Edit</button>
-                        </form>
-                        <form class="control footer-item" action="{{ url_for('toggle_commitment_status', commitment_id=commitment.id) }}" method="post">
-                            {{ action_form.hidden_tag() }}
-                            <button type="submit" class="button is-ghost">
-                                {% if commitment.status == 'active' %}
-                                    Mark Complete
-                                {% else %}
-                                    Mark Active
-                                {% endif %}
-                            </button>
-                        </form>
-                        <form class="control footer-item" action="{{ url_for('commitment_members', commitment_id=commitment.id) }}" method="get">
-                            <button type="submit" class="button is-ghost">View Members</button>
-                        </form>
-                        <form class="control footer-item" action="{{ url_for('delete_commitment', commitment_id=commitment.id) }}" method="post">
-                            {{ action_form.hidden_tag() }}
-                            <button type="submit" class="button is-ghost">Delete</button>
-                        </form>
-                </footer>
-            </div>
-            {% endfor %}
+            {% with commitments=commitments, allow_delete=true %}
+            {% include "_commitment_cards.html" %}
+            {% endwith %}
         </div>
     </div>
     {% else %}
@@ -68,55 +22,9 @@
     {% if shared_commitments %}
         <div class="fixed-grid has-3-cols">
         <div class="grid">
-            {% for commitment in shared_commitments %}
-            {% set progress = commitment_progress.get(commitment.id, 0) %}
-            <div class="card cell">
-                <div class="card-header">
-                    <div class="card-header-title">
-                        {{ commitment.title }}
-                    </div>
-                </div>
-                <div class="card-content">
-                    <div class="commitment-description">
-                        <p>{{ commitment.description if commitment.description else '-' }}</p>
-                    </div>
-                    <div class="commitment-details">
-                        <div class="detail-item">
-                            <p><b>Deadline Date:</b> {{ commitment.deadline_date.strftime('%m/%d/%Y') }}</p>
-                            <p><b>Status:</b> {{ commitment.status|capitalize }}</p>
-                        </div>
-                        <div class="detail-item">
-                            <span class="progress-wrap">
-                                    <span class="progress-pie" style="--p: {{ progress }};" title="Time progress: {{ progress }}%"></span>
-                                    <span class="progress-text">{{ progress }}%</span>
-                            </span>
-                        </div>
-                    </div>
-                </div>
-                <footer class="card-footer">
-                    <form class="control footer-item" action="{{ url_for('edit_commitment', commitment_id=commitment.id) }}" method="get">
-                            <button type="submit" class="button is-ghost">Edit</button>
-                        </form>
-                        <form class="control footer-item" action="{{ url_for('toggle_commitment_status', commitment_id=commitment.id) }}" method="post">
-                            {{ action_form.hidden_tag() }}
-                            <button type="submit" class="button is-ghost">
-                                {% if commitment.status == 'active' %}
-                                    Mark Complete
-                                {% else %}
-                                    Mark Active
-                                {% endif %}
-                            </button>
-                        </form>
-                        <form class="control footer-item" action="{{ url_for('commitment_members', commitment_id=commitment.id) }}" method="get">
-                            <button type="submit" class="button is-ghost">View Members</button>
-                        </form>
-                        <form class="control footer-item" action="{{ url_for('delete_commitment', commitment_id=commitment.id) }}" method="post">
-                            {{ action_form.hidden_tag() }}
-                            <button type="submit" class="button is-ghost">Delete</button>
-                        </form>
-                </footer>
-            </div>
-            {% endfor %}
+            {% with commitments=shared_commitments, allow_delete=false %}
+            {% include "_commitment_cards.html" %}
+            {% endwith %}
         </div>
     </div>
     {% else %}
@@ -182,7 +90,10 @@
             </form>
         </div>
     </div>
+{% endblock %}
 
+{% block scripts %}
+    {{ super() }}
     <script>
         (function () {
             const createModal = document.getElementById("create-commitment-modal");
@@ -196,21 +107,19 @@
 
             function closeCreateModal() {
                 createModal.classList.add("is-hidden");
-                const ownedTitle = document.getElementById("owned-by-me");
-                if (ownedTitle) {
-                    ownedTitle.scrollIntoView({ behavior: "smooth", block: "start" });
-                }
             }
 
             if (openCreateBtn) {
                 openCreateBtn.addEventListener("click", openCreateModal);
             }
 
-            createModal.querySelectorAll("[data-close-create-modal='true']").forEach((node) => {
-                node.addEventListener("click", closeCreateModal);
+            createModal.addEventListener("click", function (event) {
+                if (event.target.matches("[data-close-create-modal='true']")) {
+                    closeCreateModal();
+                }
             });
 
-            document.addEventListener("keydown", (event) => {
+            document.addEventListener("keydown", function (event) {
                 if (event.key === "Escape" && !createModal.classList.contains("is-hidden")) {
                     closeCreateModal();
                 }

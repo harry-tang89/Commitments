@@ -153,13 +153,16 @@ The implementation avoids disclosing whether an account exists during the first 
 ### HTML Pages
 
 - `/` and `/index`: landing page with quick-create UI
+- `/settings`: settings page; for signed-in users preferences are stored on the `User` record and reused across devices
 - `/commitments`: full commitments page for authenticated users
 - `/commitments/<id>/edit`: edit a commitment
 - `/commitments/<id>/members`: view members for a commitment
-- `/settings`: settings page
 
 ### JSON Endpoints
 
+- `GET /api/settings`: fetch the signed-in user's saved settings
+- `PATCH /api/settings`: update the signed-in user's saved settings
+- `GET /api/commitments/events`: stream real-time commitment change notifications for signed-in users via SSE
 - `POST /api/commitments/quick`: quick-create commitment
 - `PATCH /api/commitments/<id>/quick`: quick-update commitment
 - `DELETE /api/commitments/<id>/quick`: owner-only delete
@@ -277,7 +280,7 @@ Covered areas include:
 
 - The app uses an app-global Flask instance rather than an application factory.
 - Login and recovery forms describe phone support, but user lookup currently uses email only.
-- Some older tests still reference `target_date`, while the current application model and forms use `deadline_date`.
+- The current application model, forms, and tests use `deadline_date`.
 - `toggle_commitment_status` uses `"complete"` while the quick API uses `"completed"`, so status naming is not fully consistent.
 
 These are good candidates for future cleanup if the project is still evolving.

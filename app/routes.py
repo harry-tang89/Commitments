@@ -1,16 +1,28 @@
-from flask import render_template, redirect, url_for, flash, request, abort, jsonify, send_from_directory, session
+from flask import Response, render_template, redirect, url_for, flash, request, abort, jsonify, send_from_directory, session, stream_with_context
 from urllib.parse import urlsplit
 from datetime import datetime, time, timezone, date
 from email.message import EmailMessage
 import hashlib
+import json
 import re
 import secrets
 import smtplib
+import time as time_module
 from app import app
+from app.constants import (
+    CATEGORY_CHOICES,
+    CATEGORY_VALUES,
+    EMAIL_REGEX,
+    GENERIC_RECOVERY_FAILURE,
+    MOBILE_REGEX,
+    PASSWORD_MIN_LENGTH,
+    REGISTRATION_SESSION_KEY,
+)
 from app.forms import (
     RegistrationForm,
     LoginForm,
     ForgotPasswordForm,
+    AccountEmailForm,
     CommitmentForm,
     EmptyForm,
 )
@@ -21,18 +33,7 @@ from app import db
 from app.models import User, Commitment, commitment_collaborator
 
 
-EMAIL_REGEX = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-MOBILE_REGEX = re.compile(r"^\+?[0-9][0-9\-\s]{6,19}$")
-CATEGORY_CHOICES = [
-    ("general", "General"),
-    ("study", "Study"),
-    ("health", "Health"),
-    ("travel", "Travel"),
-]
-CATEGORY_VALUES = {value for value, _label in CATEGORY_CHOICES}
-PASSWORD_MIN_LENGTH = 8
-GENERIC_RECOVERY_FAILURE = "We could not verify those details."
-REGISTRATION_SESSION_KEY = "registration_email_verification"
+SETTING_AUTO_DELETE_RANGE_VALUES = {"yesterday", "all"}
 
 
 def _normalize_datetime(dt: datetime) -> datetime:
@@ -136,6 +137,47 @@ def _normalize_contact(raw_contact: str) -> str:
     if "@" in contact:
         return contact.lower()
     return contact
+
+
+def _serialize_user_settings(user: User) -> dict:
+    return {
+        "default_deadline_today": bool(user.setting_default_deadline_today),
+        "auto_hide_completed": bool(user.setting_auto_hide_completed),
+        "auto_delete_overdue": bool(user.setting_auto_delete_overdue),
+        "auto_delete_overdue_range": (
+            user.setting_auto_delete_overdue_range
+            if user.setting_auto_delete_overdue_range in SETTING_AUTO_DELETE_RANGE_VALUES
+            else "yesterday"
+        ),
+    }
+
+
+def _coerce_bool_setting(value) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    return None
+
+
+def _coerce_auto_delete_range(value) -> str | None:
+    normalized = str(value or "").strip().lower()
+    if normalized in SETTING_AUTO_DELETE_RANGE_VALUES:
+        return normalized
+    return None
+
+
+def _commitment_sync_user_ids(commitment: Commitment) -> set[int]:
+    return {int(commitment.user_id)} | {int(user.id) for user in commitment.collaborators}
+
+
+def _touch_commitment_sync_versions(user_ids: set[int]) -> None:
+    normalized_ids = {int(user_id) for user_id in user_ids if int(user_id) > 0}
+    if not normalized_ids:
+        return
+    db.session.execute(
+        sa.update(User)
+        .where(User.id.in_(normalized_ids))
+        .values(commitments_sync_version=User.commitments_sync_version + 1)
+    )
 
 
 def _is_valid_contact(contact: str) -> bool:
@@ -294,6 +336,13 @@ def _normalize_category(raw_category: str | None) -> str | None:
     return category
 
 
+def _build_username_seed(contact: str) -> str:
+    username_seed = contact
+    if "@" in username_seed:
+        username_seed = username_seed.split("@", 1)[0]
+    return re.sub(r"[^a-zA-Z0-9_.-]", "", username_seed)
+
+
 def _parse_commitment_payload(data: dict) -> tuple[dict | None, tuple[str, int] | None]:
     """
     Parse and validate the JSON payload for the "quick" commitment endpoints.
@@ -341,6 +390,17 @@ def _parse_commitment_payload(data: dict) -> tuple[dict | None, tuple[str, int] 
     }, None
 
 
+def _create_commitment_record(user_id: int, payload: dict) -> Commitment:
+    return Commitment(
+        user_id=user_id,
+        category=payload["category"],
+        title=payload["title"],
+        description=payload["description"],
+        deadline_date=payload["deadline_date"],
+        status="active",
+    )
+
+
 def _find_accessible_commitment(commitment_id: int, user_id: int) -> Commitment | None:
     """
     Fetch a commitment only if the user has access to it:
@@ -354,6 +414,15 @@ def _find_accessible_commitment(commitment_id: int, user_id: int) -> Commitment 
                 Commitment.user_id == user_id,
                 Commitment.collaborators.any(User.id == user_id),
             ),
+        )
+    )
+
+
+def _find_owned_commitment(commitment_id: int, user_id: int) -> Commitment | None:
+    return db.session.scalar(
+        sa.select(Commitment).where(
+            Commitment.id == commitment_id,
+            Commitment.user_id == user_id,
         )
     )
 
@@ -471,6 +540,123 @@ def index():
 @app.route("/settings")
 def settings():
     return render_template("settings.html", title="Settings")
+
+
+@app.route("/api/settings", methods=["GET", "PATCH"])
+@login_required
+def user_settings_api():
+    if request.method == "GET":
+        return jsonify({"ok": True, "settings": _serialize_user_settings(current_user)}), 200
+
+    data = request.get_json(silent=True) or {}
+    updates = {}
+
+    if "default_deadline_today" in data:
+        value = _coerce_bool_setting(data.get("default_deadline_today"))
+        if value is None:
+            return jsonify({"ok": False, "message": "default_deadline_today must be true or false."}), 400
+        updates["setting_default_deadline_today"] = value
+
+    if "auto_hide_completed" in data:
+        value = _coerce_bool_setting(data.get("auto_hide_completed"))
+        if value is None:
+            return jsonify({"ok": False, "message": "auto_hide_completed must be true or false."}), 400
+        updates["setting_auto_hide_completed"] = value
+
+    if "auto_delete_overdue" in data:
+        value = _coerce_bool_setting(data.get("auto_delete_overdue"))
+        if value is None:
+            return jsonify({"ok": False, "message": "auto_delete_overdue must be true or false."}), 400
+        updates["setting_auto_delete_overdue"] = value
+
+    if "auto_delete_overdue_range" in data:
+        value = _coerce_auto_delete_range(data.get("auto_delete_overdue_range"))
+        if value is None:
+            return jsonify({"ok": False, "message": "auto_delete_overdue_range must be Past Day or All Time."}), 400
+        updates["setting_auto_delete_overdue_range"] = value
+
+    for attribute, value in updates.items():
+        setattr(current_user, attribute, value)
+
+    _touch_commitment_sync_versions({current_user.id})
+    db.session.commit()
+    return jsonify({"ok": True, "settings": _serialize_user_settings(current_user)}), 200
+
+
+@app.route("/api/commitments/events")
+@login_required
+def commitment_events_stream():
+    user_id = int(current_user.id)
+    initial_version = int(current_user.commitments_sync_version or 0)
+
+    @stream_with_context
+    def generate():
+        last_version = initial_version
+        heartbeat_interval_seconds = 15
+        next_heartbeat_at = time_module.monotonic() + heartbeat_interval_seconds
+        yield "retry: 2000\n"
+        yield f"event: sync-version\ndata: {json.dumps({'version': last_version})}\n\n"
+
+        while True:
+            db.session.remove()
+            current_version = db.session.scalar(
+                sa.select(User.commitments_sync_version).where(User.id == user_id)
+            )
+            current_version = int(current_version or 0)
+            if current_version != last_version:
+                last_version = current_version
+                yield f"event: commitments-updated\ndata: {json.dumps({'version': last_version})}\n\n"
+                next_heartbeat_at = time_module.monotonic() + heartbeat_interval_seconds
+            elif time_module.monotonic() >= next_heartbeat_at:
+                yield ": keep-alive\n\n"
+                next_heartbeat_at = time_module.monotonic() + heartbeat_interval_seconds
+
+            time_module.sleep(1)
+
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@app.route("/account", methods=["GET", "POST"])
+@login_required
+def account():
+    form = AccountEmailForm(current_user.email)
+    show_email_editor = False
+
+    if request.method == "GET":
+        form.email.data = current_user.email
+
+    if form.validate_on_submit():
+        current_user.email = form.email.data
+        try:
+            db.session.commit()
+            flash("Email updated.")
+            return redirect(url_for("account"))
+        except IntegrityError:
+            db.session.rollback()
+            form.email.errors.append("Email already registered. Please use a different email address.")
+            show_email_editor = True
+        except SQLAlchemyError:
+            db.session.rollback()
+            app.logger.exception("Database error during account email update")
+            form.email.errors.append("We could not update your email right now. Please try again.")
+            show_email_editor = True
+    elif request.method == "POST":
+        show_email_editor = True
+
+    return render_template(
+        "account.html",
+        title="Account",
+        form=form,
+        show_email_editor=show_email_editor,
+    )
 
 
 @app.route("/sw.js")
@@ -708,11 +894,7 @@ def register():
             if username_input:
                 username_value = username_input
             else:
-                username_seed = contact
-                if "@" in username_seed:
-                    username_seed = username_seed.split("@", 1)[0]
-                username_seed = re.sub(r"[^a-zA-Z0-9_.-]", "", username_seed)
-                username_value = _generate_unique_username(username_seed)
+                username_value = _generate_unique_username(_build_username_seed(contact))
 
             user = User(
                 username=username_value,
@@ -807,15 +989,17 @@ def create_commitment():
             commitment_progress=context["commitment_progress"],
         ), 400
 
-    commitment = Commitment(
-        user_id=current_user.id,
-        category=_normalize_category(form.category.data),
-        title=form.title.data.strip(),
-        description=form.description.data.strip() if form.description.data else None,
-        deadline_date=form.deadline_date.data,
-        status='active',
+    commitment = _create_commitment_record(
+        current_user.id,
+        {
+            "category": _normalize_category(form.category.data),
+            "title": form.title.data.strip(),
+            "description": form.description.data.strip() if form.description.data else None,
+            "deadline_date": form.deadline_date.data,
+        },
     )
     db.session.add(commitment)
+    _touch_commitment_sync_versions({current_user.id})
     db.session.commit()
     flash('Commitment created successfully.')
     return redirect(url_for('commitments'))
@@ -844,33 +1028,16 @@ def quick_create_commitment():
             }
         ), 401
 
-    commitment = Commitment(
-        user_id=current_user.id,
-        category=payload["category"],
-        title=payload["title"],
-        description=payload["description"],
-        deadline_date=payload["deadline_date"],
-        status='active',
-    )
+    commitment = _create_commitment_record(current_user.id, payload)
     db.session.add(commitment)
+    _touch_commitment_sync_versions({current_user.id})
     db.session.commit()
 
     return jsonify(
         {
             "ok": True,
             "saved_to_db": True,
-            "commitment": {
-                "id": commitment.id,
-                "category": commitment.category or "",
-                "title": commitment.title,
-                "description": commitment.description,
-                "deadline_date": commitment.deadline_date.isoformat(),
-                "status": commitment.status,
-                "created_at": commitment.created_at.isoformat() if commitment.created_at else None,
-                "member_count": 1,
-                "can_edit": True,
-                "can_delete": True,
-            },
+            "commitment": _serialize_commitment_for_home(commitment),
         }
     ), 201
 
@@ -896,6 +1063,7 @@ def quick_update_commitment(commitment_id):
     commitment.category = payload["category"]
     commitment.description = payload["description"]
     commitment.deadline_date = payload["deadline_date"]
+    _touch_commitment_sync_versions(_commitment_sync_user_ids(commitment))
     db.session.commit()
 
     return jsonify({"ok": True, "commitment": _serialize_commitment_for_home(commitment)}), 200
@@ -912,6 +1080,7 @@ def quick_complete_commitment(commitment_id):
         return jsonify({"ok": False, "message": "Commitment not found."}), 404
 
     commitment.status = "completed"
+    _touch_commitment_sync_versions(_commitment_sync_user_ids(commitment))
     db.session.commit()
     return jsonify({"ok": True, "commitment": _serialize_commitment_for_home(commitment)}), 200
 
@@ -927,6 +1096,7 @@ def quick_recover_commitment(commitment_id):
         return jsonify({"ok": False, "message": "Commitment not found."}), 404
 
     commitment.status = "active"
+    _touch_commitment_sync_versions(_commitment_sync_user_ids(commitment))
     db.session.commit()
     return jsonify({"ok": True, "commitment": _serialize_commitment_for_home(commitment)}), 200
 
@@ -934,16 +1104,13 @@ def quick_recover_commitment(commitment_id):
 @app.route('/api/commitments/<int:commitment_id>/quick', methods=['DELETE'])
 @login_required
 def quick_delete_commitment(commitment_id):
-    commitment = db.session.scalar(
-        sa.select(Commitment).where(
-            Commitment.id == commitment_id,
-            Commitment.user_id == current_user.id,
-        )
-    )
+    commitment = _find_owned_commitment(commitment_id, current_user.id)
     if commitment is None:
         return jsonify({"ok": False, "message": "Commitment not found."}), 404
 
+    affected_user_ids = _commitment_sync_user_ids(commitment)
     db.session.delete(commitment)
+    _touch_commitment_sync_versions(affected_user_ids)
     db.session.commit()
     return jsonify({"ok": True}), 200
 
@@ -963,6 +1130,8 @@ def quick_leave_commitment(commitment_id):
         return jsonify({"ok": False, "message": "You are not a member of this commitment."}), 400
 
     commitment.collaborators.remove(member)
+    affected_user_ids = _commitment_sync_user_ids(commitment) | {current_user.id}
+    _touch_commitment_sync_versions(affected_user_ids)
     db.session.commit()
     return jsonify({"ok": True, "message": "You left the commitment."}), 200
 
@@ -998,12 +1167,7 @@ def quick_commitment_members(commitment_id):
             }
         ), 200
 
-    commitment = db.session.scalar(
-        sa.select(Commitment).where(
-            Commitment.id == commitment_id,
-            Commitment.user_id == current_user.id,
-        )
-    )
+    commitment = _find_owned_commitment(commitment_id, current_user.id)
     if commitment is None:
         return jsonify({"ok": False, "message": "Commitment not found."}), 404
 
@@ -1023,6 +1187,7 @@ def quick_commitment_members(commitment_id):
         return jsonify({"ok": False, "message": "This member is already added."}), 400
 
     commitment.collaborators.append(member)
+    _touch_commitment_sync_versions(_commitment_sync_user_ids(commitment))
     db.session.commit()
     return jsonify(
         {
@@ -1082,13 +1247,14 @@ def sync_local_commitments():
             skipped_invalid += 1
             continue
 
-        commitment = Commitment(
-            user_id=current_user.id,
-            category=category,
-            title=title,
-            description=description or None,
-            deadline_date=deadline_date_value,
-            status='active',
+        commitment = _create_commitment_record(
+            current_user.id,
+            {
+                "category": category,
+                "title": title,
+                "description": description or None,
+                "deadline_date": deadline_date_value,
+            },
         )
         db.session.add(commitment)
         db.session.commit()
@@ -1098,6 +1264,10 @@ def sync_local_commitments():
         created += 1
         created_items.append(_serialize_commitment_for_home(commitment))
 
+    if created > 0:
+        _touch_commitment_sync_versions({current_user.id})
+        db.session.commit()
+
     return jsonify(
         {
             "ok": True,
@@ -1105,6 +1275,18 @@ def sync_local_commitments():
             "skipped_duplicates": skipped_duplicates,
             "skipped_invalid": skipped_invalid,
             "created_items": created_items,
+        }
+    ), 200
+
+
+@app.route('/api/commitments/home-data', methods=['GET'])
+@login_required
+def home_commitments_data():
+    commitments = _accessible_commitments_for_user(current_user.id)
+    return jsonify(
+        {
+            "ok": True,
+            "commitments": [_serialize_commitment_for_home(commitment) for commitment in commitments],
         }
     ), 200
 
@@ -1138,16 +1320,13 @@ def delete_commitment(commitment_id):
     if not form.validate_on_submit():
         abort(400)
 
-    commitment = db.session.scalar(
-        sa.select(Commitment).where(
-            Commitment.id == commitment_id,
-            Commitment.user_id == current_user.id,
-        )
-    )
+    commitment = _find_owned_commitment(commitment_id, current_user.id)
     if commitment is None:
         abort(404)
 
+    affected_user_ids = _commitment_sync_user_ids(commitment)
     db.session.delete(commitment)
+    _touch_commitment_sync_versions(affected_user_ids)
     db.session.commit()
     flash('Commitment deleted.')
     return redirect(url_for('commitments'))
@@ -1163,6 +1342,7 @@ def toggle_commitment_status(commitment_id):
         return redirect(url_for("commitments"))
 
     commitment.status = "complete" if commitment.status == "active" else "active"
+    _touch_commitment_sync_versions(_commitment_sync_user_ids(commitment))
     db.session.commit()
 
     flash("Commitment status updated.")
@@ -1172,12 +1352,7 @@ def toggle_commitment_status(commitment_id):
 @app.route('/commitments/<int:commitment_id>/edit', methods=['GET', 'POST'])
 @login_required
 def edit_commitment(commitment_id):
-    commitment = db.session.scalar(
-        sa.select(Commitment).where(
-            Commitment.id == commitment_id,
-            Commitment.user_id == current_user.id,
-        )
-    )
+    commitment = _find_owned_commitment(commitment_id, current_user.id)
     if commitment is None:
         abort(404)
 
@@ -1187,6 +1362,7 @@ def edit_commitment(commitment_id):
         commitment.title = form.title.data.strip()
         commitment.description = form.description.data.strip() if form.description.data else None
         commitment.deadline_date = form.deadline_date.data
+        _touch_commitment_sync_versions(_commitment_sync_user_ids(commitment))
         db.session.commit()
         flash('Commitment updated successfully.')
         return redirect(url_for('commitments'))

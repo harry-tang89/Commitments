@@ -24,28 +24,177 @@
                 <span class="apple-switch-slider" aria-hidden="true"></span>
             </label>
         </div>
+        <div class="settings-row">
+            <div class="settings-copy">
+                <p class="settings-title">Auto delete overdue commitments</p>
+                <p class="settings-help">When enabled, overdue commitments are automatically removed when you open Home.</p>
+            </div>
+            <div class="settings-controls">
+                <label class="settings-select-wrap" for="setting-auto-delete-overdue-range">
+                    <span class="settings-select-label">Delete range</span>
+                    <select id="setting-auto-delete-overdue-range" class="settings-select">
+                        <option value="yesterday">Past Day</option>
+                        <option value="all">All Time</option>
+                    </select>
+                </label>
+                <label class="apple-switch" for="setting-auto-delete-overdue">
+                    <input type="checkbox" id="setting-auto-delete-overdue">
+                    <span class="apple-switch-slider" aria-hidden="true"></span>
+                </label>
+            </div>
+        </div>
         <a class="action-btn action-btn-secondary settings-back-link" href="{{ url_for('index') }}">Back to Home</a>
     </section>
 </div>
 
 <script>
 (() => {
+    window.commitmentsCurrentSettings = {{ ({
+        "default_deadline_today": current_user.setting_default_deadline_today,
+        "auto_hide_completed": current_user.setting_auto_hide_completed,
+        "auto_delete_overdue": current_user.setting_auto_delete_overdue,
+        "auto_delete_overdue_range": current_user.setting_auto_delete_overdue_range
+    } if current_user.is_authenticated else none)|tojson }};
+
     const defaultDeadlineKey = "setting_default_deadline_today_v1";
     const autoHideCompletedKey = "setting_auto_hide_completed_v1";
+    const autoDeleteOverdueKey = "setting_auto_delete_overdue_v1";
+    const autoDeleteOverdueRangeKey = "setting_auto_delete_overdue_range_v1";
     const deadlineToggleEl = document.getElementById("setting-default-deadline-today");
     const autoHideToggleEl = document.getElementById("setting-auto-hide-completed");
-    if (!deadlineToggleEl || !autoHideToggleEl) return;
+    const autoDeleteOverdueToggleEl = document.getElementById("setting-auto-delete-overdue");
+    const autoDeleteRangeEl = document.getElementById("setting-auto-delete-overdue-range");
+    const isAuthenticated = {{ 'true' if current_user.is_authenticated else 'false' }};
+    if (!deadlineToggleEl || !autoHideToggleEl || !autoDeleteOverdueToggleEl || !autoDeleteRangeEl) return;
 
-    deadlineToggleEl.checked = localStorage.getItem(defaultDeadlineKey) === "1";
-    autoHideToggleEl.checked = localStorage.getItem(autoHideCompletedKey) === "1";
+    function normalizeRange(value) {
+        return value === "all" ? "all" : "yesterday";
+    }
 
-    deadlineToggleEl.addEventListener("change", () => {
-        localStorage.setItem(defaultDeadlineKey, deadlineToggleEl.checked ? "1" : "0");
+    function readGuestSettings() {
+        return {
+            default_deadline_today: localStorage.getItem(defaultDeadlineKey) === "1",
+            auto_hide_completed: localStorage.getItem(autoHideCompletedKey) === "1",
+            auto_delete_overdue: localStorage.getItem(autoDeleteOverdueKey) === "1",
+            auto_delete_overdue_range: normalizeRange(localStorage.getItem(autoDeleteOverdueRangeKey)),
+        };
+    }
+
+    function writeGuestSettings(settings) {
+        localStorage.setItem(defaultDeadlineKey, settings.default_deadline_today ? "1" : "0");
+        localStorage.setItem(autoHideCompletedKey, settings.auto_hide_completed ? "1" : "0");
+        localStorage.setItem(autoDeleteOverdueKey, settings.auto_delete_overdue ? "1" : "0");
+        localStorage.setItem(autoDeleteOverdueRangeKey, normalizeRange(settings.auto_delete_overdue_range));
+    }
+
+    let settingsState = window.commitmentsCurrentSettings || readGuestSettings();
+
+    function syncControls() {
+        deadlineToggleEl.checked = Boolean(settingsState.default_deadline_today);
+        autoHideToggleEl.checked = Boolean(settingsState.auto_hide_completed);
+        autoDeleteOverdueToggleEl.checked = Boolean(settingsState.auto_delete_overdue);
+        autoDeleteRangeEl.value = normalizeRange(settingsState.auto_delete_overdue_range);
+    }
+
+    async function persistSettings(nextSettings) {
+        if (!isAuthenticated) {
+            settingsState = { ...settingsState, ...nextSettings };
+            writeGuestSettings(settingsState);
+            window.commitmentsCurrentSettings = settingsState;
+            syncControls();
+            return;
+        }
+
+        const response = await fetch("/api/settings", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(nextSettings),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.settings) {
+            throw new Error(result.message || "Failed to save settings.");
+        }
+        settingsState = result.settings;
+        window.commitmentsCurrentSettings = settingsState;
+        syncControls();
+    }
+
+    async function refreshSettingsFromServer() {
+        if (!isAuthenticated) return;
+        const response = await fetch("/api/settings", {
+            headers: { "Accept": "application/json" },
+            cache: "no-store",
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.settings) return;
+        settingsState = result.settings;
+        window.commitmentsCurrentSettings = settingsState;
+        syncControls();
+    }
+
+    function startSettingsEventStream() {
+        if (!isAuthenticated || typeof window.EventSource !== "function") return;
+        const eventSource = new EventSource("/api/commitments/events");
+
+        eventSource.addEventListener("commitments-updated", () => {
+            if (document.hidden) return;
+            refreshSettingsFromServer().catch(() => {});
+        });
+
+        eventSource.onerror = () => {
+            eventSource.close();
+            window.setTimeout(startSettingsEventStream, 5000);
+        };
+
+        window.addEventListener("beforeunload", () => {
+            eventSource.close();
+        }, { once: true });
+    }
+
+    syncControls();
+
+    deadlineToggleEl.addEventListener("change", async () => {
+        try {
+            await persistSettings({ default_deadline_today: deadlineToggleEl.checked });
+        } catch (_error) {
+            syncControls();
+        }
     });
 
-    autoHideToggleEl.addEventListener("change", () => {
-        localStorage.setItem(autoHideCompletedKey, autoHideToggleEl.checked ? "1" : "0");
+    autoHideToggleEl.addEventListener("change", async () => {
+        try {
+            await persistSettings({ auto_hide_completed: autoHideToggleEl.checked });
+        } catch (_error) {
+            syncControls();
+        }
     });
+
+    autoDeleteOverdueToggleEl.addEventListener("change", async () => {
+        try {
+            await persistSettings({
+                auto_delete_overdue: autoDeleteOverdueToggleEl.checked,
+                auto_delete_overdue_range: normalizeRange(autoDeleteRangeEl.value),
+            });
+        } catch (_error) {
+            syncControls();
+        }
+    });
+
+    autoDeleteRangeEl.addEventListener("change", async () => {
+        try {
+            await persistSettings({ auto_delete_overdue_range: normalizeRange(autoDeleteRangeEl.value) });
+        } catch (_error) {
+            syncControls();
+        }
+    });
+
+    document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) {
+            refreshSettingsFromServer().catch(() => {});
+        }
+    });
+
+    startSettingsEventStream();
 })();
 </script>
 {% endblock %}

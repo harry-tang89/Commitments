@@ -30,6 +30,36 @@ class User(UserMixin, db.Model):
     birth_month: so.Mapped[Optional[int]] = so.mapped_column(sa.Integer(), nullable=True)
     birth_year: so.Mapped[Optional[int]] = so.mapped_column(sa.Integer(), nullable=True)
     password_hash: so.Mapped[Optional[str]] = so.mapped_column(sa.String(256))
+    setting_default_deadline_today: so.Mapped[bool] = so.mapped_column(
+        sa.Boolean(),
+        nullable=False,
+        default=False,
+        server_default=sa.false(),
+    )
+    setting_auto_hide_completed: so.Mapped[bool] = so.mapped_column(
+        sa.Boolean(),
+        nullable=False,
+        default=False,
+        server_default=sa.false(),
+    )
+    setting_auto_delete_overdue: so.Mapped[bool] = so.mapped_column(
+        sa.Boolean(),
+        nullable=False,
+        default=False,
+        server_default=sa.false(),
+    )
+    setting_auto_delete_overdue_range: so.Mapped[str] = so.mapped_column(
+        sa.String(16),
+        nullable=False,
+        default="yesterday",
+        server_default="yesterday",
+    )
+    commitments_sync_version: so.Mapped[int] = so.mapped_column(
+        sa.Integer(),
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
     commitments: so.Mapped[list["Commitment"]] = so.relationship(
         back_populates="owner",
         cascade="all, delete-orphan",
