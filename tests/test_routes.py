@@ -615,6 +615,165 @@ def test_sync_local_commitments_requires_login(http_client):
     assert response.status_code == 401
 
 
+def test_mobile_session_reports_logged_out_state(http_client):
+    response = http_client.get("/api/mobile/session")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload is not None
+    assert payload["ok"] is True
+    assert payload["authenticated"] is False
+    assert payload["user"] is None
+
+
+def test_mobile_login_returns_user_and_owned_commitments(http_client):
+    user = create_user_in_db(
+        username="mobileuser",
+        email="mobile@example.com",
+        plaintext_password="password123",
+    )
+    db.session.add(
+        Commitment(
+            user_id=user.id,
+            title="Mobile API item",
+            description="Returned after login",
+            deadline_date=date.today() + timedelta(days=2),
+            status="active",
+        )
+    )
+    db.session.commit()
+
+    response = http_client.post(
+        "/api/mobile/login",
+        json={
+            "login": "mobile@example.com",
+            "password": "password123",
+            "remember": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload is not None
+    assert payload["ok"] is True
+    assert payload["authenticated"] is True
+    assert payload["user"]["email"] == "mobile@example.com"
+    assert len(payload["commitments"]) == 1
+    assert payload["commitments"][0]["title"] == "Mobile API item"
+
+
+def test_mobile_commitments_require_login(http_client):
+    response = http_client.get("/api/mobile/commitments")
+
+    assert response.status_code == 401
+
+
+def test_mobile_create_update_and_delete_commitment(http_client):
+    create_user_in_db(
+        username="mobileeditor",
+        email="mobileeditor@example.com",
+        plaintext_password="password123",
+    )
+    login_response = http_client.post(
+        "/api/mobile/login",
+        json={
+            "login": "mobileeditor@example.com",
+            "password": "password123",
+        },
+    )
+    assert login_response.status_code == 200
+
+    create_response = http_client.post(
+        "/api/mobile/commitments",
+        json={
+            "title": "Created on iPhone",
+            "description": "Initial body",
+            "deadline_date": (date.today() + timedelta(days=4)).isoformat(),
+            "category": "study",
+        },
+    )
+    assert create_response.status_code == 201
+    created_payload = create_response.get_json()
+    assert created_payload is not None
+    assert created_payload["ok"] is True
+    created_id = created_payload["commitment"]["id"]
+
+    saved_commitment = db.session.get(Commitment, created_id)
+    assert saved_commitment is not None
+    assert saved_commitment.title == "Created on iPhone"
+    assert saved_commitment.category == "study"
+
+    update_response = http_client.patch(
+        f"/api/mobile/commitments/{created_id}",
+        json={
+            "title": "Updated on iPhone",
+            "description": "Updated body",
+            "is_completed": True,
+        },
+    )
+    assert update_response.status_code == 200
+    updated_payload = update_response.get_json()
+    assert updated_payload is not None
+    assert updated_payload["ok"] is True
+    assert updated_payload["commitment"]["title"] == "Updated on iPhone"
+    assert updated_payload["commitment"]["is_completed"] is True
+
+    refreshed_commitment = db.session.get(Commitment, created_id)
+    assert refreshed_commitment is not None
+    assert refreshed_commitment.title == "Updated on iPhone"
+    assert refreshed_commitment.description == "Updated body"
+    assert refreshed_commitment.status == "completed"
+
+    delete_response = http_client.delete(f"/api/mobile/commitments/{created_id}")
+    assert delete_response.status_code == 200
+    delete_payload = delete_response.get_json()
+    assert delete_payload is not None
+    assert delete_payload["ok"] is True
+    assert db.session.get(Commitment, created_id) is None
+
+
+def test_mobile_update_rejects_commitment_owned_by_other_user(http_client):
+    owner = create_user_in_db(
+        username="owneruser",
+        email="owner@example.com",
+        plaintext_password="password123",
+    )
+    other_user = create_user_in_db(
+        username="otheruser",
+        email="other@example.com",
+        plaintext_password="password123",
+    )
+    foreign_commitment = Commitment(
+        user_id=owner.id,
+        title="Owner only",
+        description="Private item",
+        deadline_date=date.today() + timedelta(days=2),
+        status="active",
+    )
+    db.session.add(foreign_commitment)
+    db.session.commit()
+
+    login_response = http_client.post(
+        "/api/mobile/login",
+        json={
+            "login": other_user.email,
+            "password": "password123",
+        },
+    )
+    assert login_response.status_code == 200
+
+    update_response = http_client.patch(
+        f"/api/mobile/commitments/{foreign_commitment.id}",
+        json={"title": "Should not work"},
+    )
+
+    assert update_response.status_code == 404
+    payload = update_response.get_json()
+    assert payload is not None
+    assert payload["ok"] is False
+    assert payload["message"] == "Commitment not found."
+
+
 def test_home_commitments_data_returns_latest_user_commitments(http_client):
     user = create_user_in_db()
     login_as_user(http_client)

@@ -1,6 +1,6 @@
 from flask import Response, render_template, redirect, url_for, flash, request, abort, jsonify, send_from_directory, session, stream_with_context
 from urllib.parse import urlsplit
-from datetime import datetime, time, timezone, date
+from datetime import datetime, time, timezone, date, timedelta
 from email.message import EmailMessage
 import hashlib
 import json
@@ -120,6 +120,25 @@ def _serialize_commitment_for_home(commitment: Commitment) -> dict:
         "member_count": 1 + len(commitment.collaborators),
         "can_edit": _can_edit_commitment(commitment),
         "can_delete": commitment.user_id == current_user.id,
+    }
+
+
+def _serialize_commitment_for_mobile(commitment: Commitment) -> dict:
+    deadline_at = datetime.combine(
+        commitment.deadline_date,
+        time.max,
+        tzinfo=timezone.utc,
+    )
+    return {
+        "id": commitment.id,
+        "title": commitment.title,
+        "description": commitment.description or "",
+        "category": commitment.category or "",
+        "deadline_date": commitment.deadline_date.isoformat(),
+        "countdown_ends_at": deadline_at.isoformat(),
+        "is_completed": (commitment.status or "").strip().lower() == "completed",
+        "status": (commitment.status or "active").strip().lower(),
+        "created_at": commitment.created_at.isoformat() if commitment.created_at else None,
     }
 
 
@@ -389,7 +408,6 @@ def _parse_commitment_payload(data: dict) -> tuple[dict | None, tuple[str, int] 
         "deadline_date": deadline_date_value,
     }, None
 
-
 def _create_commitment_record(user_id: int, payload: dict) -> Commitment:
     return Commitment(
         user_id=user_id,
@@ -399,6 +417,48 @@ def _create_commitment_record(user_id: int, payload: dict) -> Commitment:
         deadline_date=payload["deadline_date"],
         status="active",
     )
+
+
+def _parse_mobile_deadline_date(
+    data: dict,
+    *,
+    required: bool,
+    default_days_ahead: int = 1,
+) -> tuple[date | None, tuple[str, int] | None]:
+    deadline_date_raw = (data.get("deadline_date") or "").strip()
+    countdown_ends_at_raw = (data.get("countdown_ends_at") or "").strip()
+
+    if deadline_date_raw:
+        try:
+            parsed_date = date.fromisoformat(deadline_date_raw)
+        except ValueError:
+            return None, ("Deadline date must be in YYYY-MM-DD format.", 400)
+        return parsed_date, None
+
+    if countdown_ends_at_raw:
+        normalized = countdown_ends_at_raw.replace("Z", "+00:00")
+        try:
+            parsed_dt = datetime.fromisoformat(normalized)
+        except ValueError:
+            return None, ("countdown_ends_at must be an ISO-8601 datetime.", 400)
+        return parsed_dt.date(), None
+
+    if required:
+        return date.today() + timedelta(days=default_days_ahead), None
+
+    return None, None
+
+
+def _mobile_login_response() -> dict:
+    return {
+        "ok": True,
+        "authenticated": current_user.is_authenticated,
+        "user": None if not current_user.is_authenticated else {
+            "id": current_user.id,
+            "username": current_user.username,
+            "email": current_user.email,
+        },
+    }
 
 
 def _find_accessible_commitment(commitment_id: int, user_id: int) -> Commitment | None:
@@ -933,6 +993,152 @@ def logout():
     """
     logout_user()
     return redirect(url_for('index'))
+
+
+@app.route('/api/mobile/session', methods=['GET'])
+def mobile_session():
+    if not current_user.is_authenticated:
+        return jsonify(_mobile_login_response()), 200
+
+    commitments = [
+        _serialize_commitment_for_mobile(commitment)
+        for commitment in _accessible_commitments_for_user(current_user.id)
+    ]
+    response = _mobile_login_response()
+    response["commitments"] = commitments
+    return jsonify(response), 200
+
+
+@app.route('/api/mobile/login', methods=['POST'])
+def mobile_login():
+    if current_user.is_authenticated:
+        return jsonify(_mobile_login_response()), 200
+
+    data = request.get_json(silent=True) or {}
+    login_id = _normalize_contact(data.get("login") or data.get("email") or "")
+    password = data.get("password") or ""
+    remember = bool(data.get("remember"))
+
+    if not login_id or not _is_valid_contact(login_id):
+        return jsonify({"ok": False, "message": "Enter a valid mobile number or email address."}), 400
+    if not password:
+        return jsonify({"ok": False, "message": "Password is required."}), 400
+
+    user = _find_user_by_contact_identifier(login_id)
+    if user is None or not user.check_password(password):
+        return jsonify({"ok": False, "message": "Invalid mobile number/email or password."}), 401
+
+    login_user(user, remember=remember)
+    response = _mobile_login_response()
+    response["commitments"] = [
+        _serialize_commitment_for_mobile(commitment)
+        for commitment in _accessible_commitments_for_user(user.id)
+    ]
+    return jsonify(response), 200
+
+
+@app.route('/api/mobile/logout', methods=['POST'])
+@login_required
+def mobile_logout():
+    logout_user()
+    return jsonify({"ok": True}), 200
+
+
+@app.route('/api/mobile/commitments', methods=['GET'])
+@login_required
+def mobile_commitments():
+    commitments = [
+        _serialize_commitment_for_mobile(commitment)
+        for commitment in _accessible_commitments_for_user(current_user.id)
+    ]
+    return jsonify({"ok": True, "commitments": commitments}), 200
+
+
+@app.route('/api/mobile/commitments', methods=['POST'])
+@login_required
+def mobile_create_commitment():
+    data = request.get_json(silent=True) or {}
+    title = (data.get("title") or "").strip()
+    description = (data.get("description") or "").strip() or None
+    category = _normalize_category(data.get("category"))
+
+    if not title:
+        return jsonify({"ok": False, "message": "Title is required."}), 400
+    if len(title) > 140:
+        return jsonify({"ok": False, "message": "Title must be 140 characters or fewer."}), 400
+
+    deadline_date_value, error = _parse_mobile_deadline_date(data, required=True)
+    if error is not None:
+        message, status_code = error
+        return jsonify({"ok": False, "message": message}), status_code
+
+    commitment = Commitment(
+        user_id=current_user.id,
+        title=title,
+        description=description,
+        category=category,
+        deadline_date=deadline_date_value,
+        status="completed" if bool(data.get("is_completed")) else "active",
+    )
+    db.session.add(commitment)
+    db.session.commit()
+    return jsonify({"ok": True, "commitment": _serialize_commitment_for_mobile(commitment)}), 201
+
+
+@app.route('/api/mobile/commitments/<int:commitment_id>', methods=['PATCH'])
+@login_required
+def mobile_update_commitment(commitment_id):
+    commitment = _find_accessible_commitment(commitment_id, current_user.id)
+    if commitment is None:
+        return jsonify({"ok": False, "message": "Commitment not found."}), 404
+
+    data = request.get_json(silent=True) or {}
+
+    if "title" in data:
+        title = (data.get("title") or "").strip()
+        if not title:
+            return jsonify({"ok": False, "message": "Title is required."}), 400
+        if len(title) > 140:
+            return jsonify({"ok": False, "message": "Title must be 140 characters or fewer."}), 400
+        commitment.title = title
+
+    if "description" in data:
+        description = (data.get("description") or "").strip()
+        commitment.description = description or None
+
+    if "category" in data:
+        commitment.category = _normalize_category(data.get("category"))
+
+    if "deadline_date" in data or "countdown_ends_at" in data:
+        deadline_date_value, error = _parse_mobile_deadline_date(data, required=False)
+        if error is not None:
+            message, status_code = error
+            return jsonify({"ok": False, "message": message}), status_code
+        if deadline_date_value is not None:
+            commitment.deadline_date = deadline_date_value
+
+    if "is_completed" in data:
+        commitment.status = "completed" if bool(data.get("is_completed")) else "active"
+
+    db.session.commit()
+    return jsonify({"ok": True, "commitment": _serialize_commitment_for_mobile(commitment)}), 200
+
+
+@app.route('/api/mobile/commitments/<int:commitment_id>', methods=['DELETE'])
+@login_required
+def mobile_delete_commitment(commitment_id):
+    commitment = db.session.scalar(
+        sa.select(Commitment).where(
+            Commitment.id == commitment_id,
+            Commitment.user_id == current_user.id,
+        )
+    )
+    if commitment is None:
+        return jsonify({"ok": False, "message": "Commitment not found."}), 404
+
+    db.session.delete(commitment)
+    db.session.commit()
+    return jsonify({"ok": True}), 200
 
 
 @app.route('/commitments')
